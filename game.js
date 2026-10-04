@@ -28,6 +28,13 @@ const RESPAWN_HEIGHT = 2600;   // px above the ground a dude comes back after a 
 const MEDKIT_HEAL = 40;        // HP restored by a health kit
 const MEDKIT_R = 30;
 const MEDKIT_COUNT = 10;       // scattered at random over the whole fall
+// barrier pick-ups: touching one gives a forcefield for a short time
+const BARRIER_COUNT = 10;
+const BARRIER_R = 28;
+const SHIELD_TIME = 2.5;       // seconds the forcefield lasts
+const SHIELD_LARGE_FACTOR = 0.25; // large obstacles still do this share of their damage through the forcefield
+// small obstacles are stopped completely by the forcefield; everything else counts as large
+const SMALL_OBSTACLES = new Set(["debris", "meteor", "balloon", "bird", "drone"]);
 const REF_SPEED = 350;        // closing speed (px/s) at which an obstacle deals its base damage
 const SIDEBAR_W = 260;        // keep in sync with #sidebar in style.css
 let W = Math.max(300, innerWidth - SIDEBAR_W); // play-area width
@@ -177,6 +184,7 @@ class Bear {
     this.done = null;                    // null | "landed" | "crashed"
     this.points = 0;
     this.hp = MAX_HP; this.dead = false; this.flash = 0; this.hitCd = 0;
+    this.shield = 0;   // seconds of forcefield left
     this.redFlash = 0; // seconds left of the red "ouch" flash after taking damage
     this.lives = LIVES; this.invuln = 0; this.respawnAt = 0;
   }
@@ -243,6 +251,7 @@ class Bear {
       c.beginPath(); c.arc(0, 0, R, 0, 7); c.fill();
     }
     c.restore();
+    if (this.shield > 0) drawForcefield(c, this.x, this.y, this.shield);
     c.fillStyle = "#fff"; c.font = "bold 14px sans-serif"; c.textAlign = "center";
     c.strokeStyle = "rgba(0,0,0,.6)"; c.lineWidth = 3;
     const ty = this.y - IMG_H / 2 - 8 - (this.deploy > 0.05 && !this.done ? 140 * this.deploy : 0);
@@ -256,6 +265,41 @@ function hpColor(hp) { return hp > 60 ? "#4cd964" : hp > 30 ? "#ffcc00" : "#ff3b
 function drawHealthBar(c, x, y, w, h, hp) {
   c.fillStyle = "rgba(0,0,0,.6)"; c.fillRect(x - 1, y - 1, w + 2, h + 2);
   c.fillStyle = hpColor(hp); c.fillRect(x, y, w * clamp(hp, 0, MAX_HP) / MAX_HP, h);
+}
+
+// barrier pick-up: a glowing blue hexagon with a shield emblem
+function drawBarrier(c, x, y, seed) {
+  c.save(); c.translate(x, y);
+  const pulse = 0.5 + 0.5 * Math.sin(time * 5 + seed);
+  const glow = c.createRadialGradient(0, 0, 6, 0, 0, 56);
+  glow.addColorStop(0, `rgba(90,200,255,${0.45 + 0.2 * pulse})`); glow.addColorStop(1, "rgba(90,200,255,0)");
+  c.fillStyle = glow; c.beginPath(); c.arc(0, 0, 56, 0, 7); c.fill();
+  c.rotate(Math.sin(time * 1.5 + seed) * 0.15);
+  const hex = r => { c.beginPath(); for (let i = 0; i < 6; i++) { const a = Math.PI / 6 + i * Math.PI / 3; c.lineTo(Math.cos(a) * r, Math.sin(a) * r); } c.closePath(); };
+  const g = c.createLinearGradient(0, -BARRIER_R, 0, BARRIER_R);
+  g.addColorStop(0, "#bff0ff"); g.addColorStop(0.5, "#2f9bff"); g.addColorStop(1, "#1446b8");
+  hex(BARRIER_R); c.fillStyle = g; c.fill(); c.lineWidth = 3; c.strokeStyle = "#eaffff"; c.stroke();
+  hex(BARRIER_R - 7); c.lineWidth = 1.5; c.strokeStyle = "rgba(255,255,255,.55)"; c.stroke();
+  // shield emblem
+  c.beginPath(); c.moveTo(0, -13); c.lineTo(11, -8); c.lineTo(11, 2); c.quadraticCurveTo(10, 11, 0, 15); c.quadraticCurveTo(-10, 11, -11, 2); c.lineTo(-11, -8); c.closePath();
+  c.fillStyle = "#fff"; c.fill();
+  c.fillStyle = "#2f9bff"; c.fillRect(-1.5, -8, 3, 17); c.fillRect(-7, -2, 14, 3);
+  c.restore();
+}
+// the forcefield bubble around a protected dude; it flickers in the last three quarters of a second
+function drawForcefield(c, x, y, left) {
+  const fading = left < 0.75 ? (Math.floor(left * 14) % 2 ? 0.35 : 1) : 1, r = 62 + Math.sin(time * 8) * 2;
+  c.save(); c.translate(x, y); c.globalAlpha = fading;
+  const g = c.createRadialGradient(0, 0, r * 0.55, 0, 0, r);
+  g.addColorStop(0, "rgba(90,200,255,0)"); g.addColorStop(0.8, "rgba(90,200,255,.22)"); g.addColorStop(1, "rgba(190,240,255,.75)");
+  c.fillStyle = g; c.beginPath(); c.arc(0, 0, r, 0, 7); c.fill();
+  c.lineWidth = 2.5; c.strokeStyle = "rgba(220,250,255,.9)"; c.stroke();
+  c.lineWidth = 4; c.strokeStyle = "rgba(255,255,255,.8)"; // moving glint
+  c.beginPath(); c.arc(0, 0, r - 5, time * 3, time * 3 + 0.9); c.stroke();
+  // time left, as an arc that empties
+  c.lineWidth = 3; c.strokeStyle = "#6cd0ff";
+  c.beginPath(); c.arc(0, 0, r + 6, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * left / SHIELD_TIME); c.stroke();
+  c.restore();
 }
 
 const CHUTE_IMG = loadImg("sprites/parachute.png");
@@ -460,7 +504,7 @@ function drawObstacle(c, o) {
 }
 
 // ---- world ----
-let state, bears, score, stars, medkits, obstacles, clouds, spaceStars, time, wind, popups;
+let state, bears, score, stars, medkits, barriers, obstacles, clouds, spaceStars, time, wind, popups;
 
 // ---- single / two player ----
 let numPlayers = 2;
@@ -495,6 +539,8 @@ function reset() {
   stars = []; obstacles = []; clouds = [];
   for (let y = 1500; y < START_ALT - 600; y += rand(300, 500)) stars.push({ x: rand(0.1, 0.9) * w, y, got: false });
   // health kits: touch one to get HP back. Placed fully at random, so some stretches have several and some none
+  barriers = [];
+  for (let i = 0; i < BARRIER_COUNT; i++) barriers.push({ x: rand(0.05, 0.95) * w, y: rand(1200, START_ALT - 800), got: false, seed: rand(0, 6) });
   medkits = [];
   for (let i = 0; i < MEDKIT_COUNT; i++) medkits.push({ x: rand(0.05, 0.95) * w, y: rand(1200, START_ALT - 800), got: false, seed: rand(0, 6) });
   // each atmosphere layer has its own hazards
@@ -509,7 +555,7 @@ function reset() {
   obstacles.push(makeObstacle("iss", w * rand(0.3, 0.7), fracOfAlt(408) * START_ALT));
   for (let i = 0; i < 70; i++) clouds.push({ x: rand(0, 1), y: rand(fracOfAlt(10) * START_ALT, START_ALT), s: rand(0.6, 1.8) });
   spaceStars = Array.from({ length: 160 }, () => ({ x: Math.random(), y: Math.random(), r: rand(0.5, 1.8), p: rand(0, 6) }));
-  showOverlay("<h1>Xiao Xiong &amp; Xiao Xiong Mao</h1>Jump out of the C-17 and fall all the way to Earth!\n\n1 player: Xiao Xiong, ← → (or A D) steer, ↑ (or W) parachute\n2 players: Xiao Xiong ← → ↑ · Xiao Xiong Mao A D W · V: split screen\n\nThe air is thin up here. Open your parachute before you reach the ground!\nGrab the glowing health kits to heal. Each dude has 2 lives.\n\n<b>Press 1 for single player · Press 2 for two players</b>\n(or tap the left / right half of the screen)\nM: music on / off");
+  showOverlay("<h1>Xiao Xiong &amp; Xiao Xiong Mao</h1>Jump out of the C-17 and fall all the way to Earth!\n\n1 player: Xiao Xiong, ← → (or A D) steer, ↑ (or W) parachute\n2 players: Xiao Xiong ← → ↑ · Xiao Xiong Mao A D W · V: split screen\n\nThe air is thin up here. Open your parachute before you reach the ground!\nGrab the glowing health kits to heal. Blue hexagons give a 2.5 s forcefield. Each dude has 2 lives.\n\n<b>Press 1 for single player · Press 2 for two players</b>\n(or tap the left / right half of the screen)\nM: music on / off");
 }
 
 // cutscene: drive the limo to the air force base, walk in, board the C-17, take off, then walk off the ramp
@@ -741,6 +787,14 @@ function start() {
 const hearts = b => "♥".repeat(b.lives) + "♡".repeat(LIVES - b.lives);
 function hurt(b, o, amount, prefix) {
   if (b.invuln > 0) return; // just lost a life: briefly protected
+  if (b.shield > 0) {
+    if (SMALL_OBSTACLES.has(o.kind)) { // the forcefield stops small things outright
+      b.hitCd = 0.6;
+      popups.push({ x: b.x, y: b.y - 60, t: 1, text: "Blocked!", color: "#6cd0ff" });
+      return;
+    }
+    amount *= SHIELD_LARGE_FACTOR; prefix = "Shield " + prefix;
+  }
   const dmg = Math.round(amount);
   b.hp = Math.max(0, b.hp - dmg); b.hitCd = 0.6; b.redFlash = RED_FLASH_TIME;
   score = Math.max(0, score - dmg * 2);
@@ -755,6 +809,7 @@ function hurt(b, o, amount, prefix) {
 function update(dt) {
   time += dt;
   for (const b of bears) {
+    b.shield = Math.max(0, b.shield - dt);
     b.flash = Math.max(0, b.flash - dt); b.redFlash = Math.max(0, b.redFlash - dt); b.hitCd = Math.max(0, b.hitCd - dt); b.invuln = Math.max(0, b.invuln - dt);
     if (b.invuln > 0) b.flash = Math.max(b.flash, 0.1); // keep blinking while protected
     // after a splat with lives to spare, come back above the ground for another go
@@ -812,6 +867,12 @@ function update(dt) {
     if (b.done) continue;
     for (const s of stars) {
       if (!s.got && Math.abs(b.x - s.x) < R + 18 && Math.abs(b.y - s.y) < R + 18) { s.got = true; score += 100; }
+    }
+    for (const br of barriers) {
+      if (br.got || Math.abs(b.x - br.x) > R + BARRIER_R || Math.abs(b.y - br.y) > R + BARRIER_R) continue;
+      br.got = true;
+      b.shield = SHIELD_TIME;
+      popups.push({ x: b.x, y: b.y - 60, t: 1.2, text: "Forcefield!", color: "#6cd0ff" });
     }
     for (const m of medkits) {
       if (m.got || Math.abs(b.x - m.x) > R + MEDKIT_R || Math.abs(b.y - m.y) > R + MEDKIT_R) continue;
@@ -1233,6 +1294,9 @@ function drawView(v, x0, vw, h, fy, skyW = vw, skyX = 0) {
 
   ctx.fillStyle = "#ffd700";
   for (const s of stars) if (!s.got) drawStar(ctx, s.x, s.y, 18);
+  for (const br of barriers) {
+    if (!br.got && br.y > v.camTop - 100 && br.y < v.camTop + viewH + 100) drawBarrier(ctx, br.x, br.y + Math.sin(time * 3 + br.seed) * 6, br.seed);
+  }
   for (const m of medkits) {
     if (m.got || m.y < v.camTop - 100 || m.y > v.camTop + viewH + 100) continue;
     const bob = Math.sin(time * 3 + m.seed) * 6, mw = 72;
