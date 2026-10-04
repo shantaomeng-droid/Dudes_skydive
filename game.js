@@ -93,6 +93,7 @@ const IMGS = {
   thermo: loadImg("backgrounds/thermosphere.jpg"),
   meso: loadImg("backgrounds/mesosphere.jpg"),
   tropo: loadImg("backgrounds/troposphere.jpg"),
+  mcBase: loadImg("backgrounds/minecraft_base.png"),
 };
 const PHOTOS = {
   xx: loadImg("TheDudesAvatars/xiaoxiong.png"),
@@ -135,6 +136,7 @@ addEventListener("keydown", e => {
     return;
   }
   if (state === "intro" && ["Space", "ArrowUp", "KeyW", "Enter"].includes(e.code)) return start(); // skip cutscene
+  if (state === "outro") { if (["Space", "Enter"].includes(e.code)) finishOutro(); return; } // skip cutscene
   if (state === "end" && e.code === "Space") return reset();
   if (e.code === "KeyP" && (state === "falling" || state === "paused")) {
     state = state === "paused" ? "falling" : "paused";
@@ -154,6 +156,7 @@ addEventListener("keyup", e => (keys[e.code] = false));
 canvas.addEventListener("pointerdown", e => {
   if (state === "start") return choosePlayers(e.clientX < W / 2 ? 1 : 2); // tap left half: 1 player, right half: 2
   if (state === "intro") return start();
+  if (state === "outro") { if (outroT > 1) finishOutro(); return; }
   if (state === "end") return reset();
   touchDir = e.clientX < W / 2 ? -1 : 1;
   if (state === "falling" && e.clientY < innerHeight * 0.25) bears.forEach(b => b.toggleChute());
@@ -230,10 +233,10 @@ class Bear {
   }
   toggleChute() { if (!this.done && !this.dead) { this.chute = !this.chute; this.av += rand(-2, 2); } }
   draw(c) {
-    if (this.dead) return; // dead dudes vanish from the sky
+    if (this.dead || this.hidden) return; // dead dudes vanish from the sky; hidden ones are inside the limo
     if (this.done === "crashed") return this.drawSplat(c);
     c.save();
-    c.translate(this.x, this.y);
+    c.translate(this.x, this.y - (this.hop || 0));
     if (this.deploy > 0.05 && !this.done) drawChute(c, this.deploy);
     c.rotate(this.angle);
     if (this.flash > 0 && Math.floor(this.flash * 20) % 2) c.globalAlpha = 0.35;
@@ -504,7 +507,16 @@ function drawObstacle(c, o) {
 }
 
 // ---- world ----
-let state, bears, score, stars, medkits, barriers, obstacles, clouds, spaceStars, time, wind, popups;
+let state, bears, score, gems, diamonds, medkits, barriers, obstacles, clouds, spaceStars, time, wind, popups;
+
+// ---- diamond score: kept in local storage so it survives closing the page ----
+const DIAMOND_KEY = "dudesSkydive.diamonds";
+let lastDiamonds = 0, bestDiamonds = 0;
+try { ({ last: lastDiamonds = 0, best: bestDiamonds = 0 } = JSON.parse(localStorage.getItem(DIAMOND_KEY)) || {}); } catch (e) {} // storage blocked or empty
+function saveDiamonds(n) {
+  lastDiamonds = n; bestDiamonds = Math.max(bestDiamonds, n);
+  try { localStorage.setItem(DIAMOND_KEY, JSON.stringify({ last: lastDiamonds, best: bestDiamonds })); } catch (e) {}
+}
 
 // ---- single / two player ----
 let numPlayers = 2;
@@ -527,6 +539,7 @@ function reset() {
   runId++;
   deathEl.classList.remove("show");
   state = "start";
+  outroT = 0; riders = []; endAtBase = false;
   score = 0; time = 0; popups = [];
   wind = { phase: rand(0, 100), x: 0 };
   const w = W;
@@ -536,8 +549,8 @@ function reset() {
   ];
   applyPlayers();
   resetViews();
-  stars = []; obstacles = []; clouds = [];
-  for (let y = 1500; y < START_ALT - 600; y += rand(300, 500)) stars.push({ x: rand(0.1, 0.9) * w, y, got: false });
+  gems = []; diamonds = 0; obstacles = []; clouds = [];
+  for (let y = 1500; y < START_ALT - 600; y += rand(300, 500)) gems.push({ x: rand(0.1, 0.9) * w, y, got: false, seed: rand(0, 6) });
   // health kits: touch one to get HP back. Placed fully at random, so some stretches have several and some none
   barriers = [];
   for (let i = 0; i < BARRIER_COUNT; i++) barriers.push({ x: rand(0.05, 0.95) * w, y: rand(1200, START_ALT - 800), got: false, seed: rand(0, 6) });
@@ -555,7 +568,7 @@ function reset() {
   obstacles.push(makeObstacle("iss", w * rand(0.3, 0.7), fracOfAlt(408) * START_ALT));
   for (let i = 0; i < 70; i++) clouds.push({ x: rand(0, 1), y: rand(fracOfAlt(10) * START_ALT, START_ALT), s: rand(0.6, 1.8) });
   spaceStars = Array.from({ length: 160 }, () => ({ x: Math.random(), y: Math.random(), r: rand(0.5, 1.8), p: rand(0, 6) }));
-  showOverlay("<h1>Xiao Xiong &amp; Xiao Xiong Mao</h1>Jump out of the C-17 and fall all the way to Earth!\n\n1 player: Xiao Xiong, ← → (or A D) steer, ↑ (or W) parachute\n2 players: Xiao Xiong ← → ↑ · Xiao Xiong Mao A D W · V: split screen\n\nThe air is thin up here. Open your parachute before you reach the ground!\nGrab the glowing health kits to heal. Blue hexagons give a 2.5 s forcefield. Each dude has 2 lives.\n\n<b>Press 1 for single player · Press 2 for two players</b>\n(or tap the left / right half of the screen)\nM: music on / off");
+  showOverlay("<h1>Xiao Xiong &amp; Xiao Xiong Mao</h1>Jump out of the C-17 and fall all the way to Earth!\n\n1 player: Xiao Xiong, ← → (or A D) steer, ↑ (or W) parachute\n2 players: Xiao Xiong ← → ↑ · Xiao Xiong Mao A D W · V: split screen\n\nThe air is thin up here. Open your parachute before you reach the ground!\nGrab the glowing health kits to heal. Blue hexagons give a 2.5 s forcefield. Collect the diamonds! Each dude has 2 lives.\nLand safely and a limo takes you to your Minecraft base!\n\n<b>Press 1 for single player · Press 2 for two players</b>\n(or tap the left / right half of the screen)\nM: music on / off");
 }
 
 // cutscene: drive the limo to the air force base, walk in, board the C-17, take off, then walk off the ramp
@@ -672,7 +685,29 @@ function scheduleIntroMusic(ac, out, T0) {
   tone(t0 + 4.55, 1500, 1.9, { type: "sine", to: 250, g: 0.06, sus: true }); // Xiao Xiong Mao follows
 }
 
-function startMusic() {
+// the ride to the Minecraft base: the road groove again, then a sparkling fanfare when the chest opens
+function scheduleOutroMusic(ac, out, T0) {
+  const { tone, noise, kick, snare, hat, crash, chord } = makeSynth(ac, out, T0);
+  const b = 0.45, ride = OUT_DRIVE_LEN + BASE_LEN;
+  const bass = [48, 48, 60, 48, 53, 53, 55, 55], lead = [76, 0, 79, 84, 0, 81, 79, 0, 77, 0, 81, 84, 0, 83, 86, 0];
+  for (let i = 0; i * b / 2 < ride - 0.3; i++) {
+    const t = i * b / 2;
+    tone(t, midi(bass[i % 8]), b * 0.45, { type: "sawtooth", lp: 600, g: 0.2 });
+    if (lead[i % 16]) tone(t, midi(lead[i % 16]), b * 0.4, { g: 0.055 });
+    hat(t, i % 2 ? 0.08 : 0.045);
+    if (i % 2 === 0) kick(t, 0.42);
+    if (i % 4 === 2) snare(t, 0.18);
+  }
+  // the chest: a held breath, then it opens
+  const open = ride + CHEST_OPEN;
+  tone(ride, midi(43), CHEST_OPEN, { type: "sawtooth", lp: 500, g: 0.12, sus: true });
+  noise(ride, CHEST_OPEN, { g: 0.08, type: "bandpass", f: 400, f2: 3000, swell: true });
+  crash(open, 0.18); kick(open, 0.6);
+  chord(open, [48, 60, 64, 67, 72, 76], 3.4, { type: "sawtooth", lp: 2400, g: 0.05, sus: true });
+  [84, 88, 91, 96, 91, 88, 91, 96, 100, 96, 91, 96, 100, 103, 100, 108].forEach((n, i) => tone(open + 0.15 + i * 0.14, midi(n), 0.4, { type: "sine", g: 0.07 }));
+}
+
+function startMusic(schedule = scheduleIntroMusic) {
   stopMusic();
   const AC = globalThis.AudioContext || globalThis.webkitAudioContext;
   if (!AC || muted) return;
@@ -680,7 +715,7 @@ function startMusic() {
     const ac = new AC(), master = ac.createGain();
     const limiter = ac.createDynamicsCompressor(); // keeps the loud take-off and "GO!" hits from distorting
     master.gain.value = 0.6; master.connect(limiter); limiter.connect(ac.destination);
-    scheduleIntroMusic(ac, master, ac.currentTime + 0.05);
+    schedule(ac, master, ac.currentTime + 0.05);
     music = { ac, master };
   } catch (e) { music = null; } // no audio device: play the intro silently
 }
@@ -865,8 +900,8 @@ function update(dt) {
 
   for (const b of bears) {
     if (b.done) continue;
-    for (const s of stars) {
-      if (!s.got && Math.abs(b.x - s.x) < R + 18 && Math.abs(b.y - s.y) < R + 18) { s.got = true; score += 100; }
+    for (const s of gems) {
+      if (!s.got && Math.abs(b.x - s.x) < R + 18 && Math.abs(b.y - s.y) < R + 18) { s.got = true; score += 100; diamonds++; }
     }
     for (const br of barriers) {
       if (br.got || Math.abs(b.x - br.x) > R + BARRIER_R || Math.abs(b.y - br.y) > R + BARRIER_R) continue;
@@ -931,11 +966,15 @@ function update(dt) {
   // the run ends when both have landed/crashed, or immediately when both are dead
   const allDead = bears.every(b => b.dead);
   if (allDead || bears.every(b => b.done && !b.respawnAt)) {
-    state = "end";
-    endGameMusic(players().some(b => b.done === "landed"));
+    riders = bears.filter(b => b.done === "landed"); // whoever landed safely gets the limo ride
+    state = riders.length ? "outro" : "end";
+    endGameMusic(riders.length > 0);
     const splatted = bears.some(b => b.done === "crashed");
     const line = b => `${b.name}: ${b.dead ? `out of lives, knocked out by ${b.killer}!` : b.done === "landed" ? `soft landing! +${b.points}` : "splat! Out of lives"}`;
-    const html = `<h1>${allDead ? "Game over" : "Touchdown!"}</h1>${players().map(line).join("\n")}\n\nScore: ${Math.round(score)}\n\nPress Space, R or tap to play again`;
+    const total = diamonds + (riders.length ? DIAMONDS : 0), record = total > bestDiamonds; // the chest's stack counts too
+    saveDiamonds(total);
+    const html = `<h1>${allDead ? "Game over" : "Touchdown!"}</h1>${players().map(line).join("\n")}\n\nScore: ${Math.round(score)}\n💎 Diamonds: ${riders.length ? `${diamonds} collected + ${DIAMONDS} from the chest = ${total}` : total}${record ? " · new best!" : `\nBest: ${bestDiamonds}`}\n\nPress Space, R or tap to play again`;
+    if (riders.length) return startOutro(html);
     const run = runId;
     if (splatted) setTimeout(() => { if (run === runId && state === "end") showOverlay(html); }, 1600); // let the splat play first
     else showOverlay(html);
@@ -952,16 +991,6 @@ function resize() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 addEventListener("resize", resize);
-
-function drawStar(c, x, y, r) {
-  c.beginPath();
-  for (let i = 0; i < 10; i++) {
-    const rr = i % 2 ? r * 0.45 : r;
-    const a = -Math.PI / 2 + i * Math.PI / 5;
-    c.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr);
-  }
-  c.closePath(); c.fill();
-}
 
 // C-17 seen from below, nose up, rear ramp down at the bottom; (x, y) is the centre of the fuselage
 function drawC17(c, x, y, k) {
@@ -999,14 +1028,14 @@ function drawKenBurns(img, cx, cy, zoom, dx = 0, dy = 0) {
   ctx.drawImage(img, ox, oy, img.naturalWidth * s, img.naturalHeight * s);
   return { s, ox, oy };
 }
-function introCaption(text, t, len) {
+function introCaption(text, t, len, fadeIn = true) {
   const w = W, h = innerHeight;
   ctx.font = "bold 18px sans-serif"; ctx.textAlign = "left"; ctx.fillStyle = "#fff";
   ctx.strokeStyle = "rgba(0,0,0,.7)"; ctx.lineWidth = 4;
   ctx.strokeText(text, 20, h - 28); ctx.fillText(text, 20, h - 28);
   ctx.textAlign = "right"; ctx.font = "14px sans-serif";
   ctx.strokeText("Space to skip · M mutes music", w - 16, h - 28); ctx.fillText("Space to skip · M mutes music", w - 16, h - 28);
-  const fade = 1 - clamp(Math.min(t / 0.35, (len - t) / 0.35), 0, 1); // fade through black at both ends
+  const fade = 1 - clamp(Math.min(fadeIn ? t / 0.35 : 1, (len - t) / 0.35), 0, 1); // fade through black at both ends
   if (fade > 0) { ctx.fillStyle = `rgba(0,0,0,${fade})`; ctx.fillRect(0, 0, w, h); }
 }
 
@@ -1063,11 +1092,11 @@ function drawIntroDude(b, v, x, y, bh, t, alpha = 1, walking = true) {
 }
 
 // scene 1: riding in the limo (the dudes are visible through the windscreen)
-function renderDrive(t) {
+function renderDrive(t, len = DRIVE_LEN, caption = "Driving to the air force base", crew = bears) {
   const w = W, h = innerHeight, img = IMGS.limoDrive;
   ctx.fillStyle = "#000"; ctx.fillRect(0, 0, w, h);
   if (!img.ok) return;
-  const u = t / DRIVE_LEN;
+  const u = t / len;
   // pan along the limo towards the cab, with a road-bump bob
   const v = drawKenBurns(img, lerp(700, 1230, ease(u)), 520, lerp(1.12, 1.5, ease(u)), 0, Math.sin(t * 13) * 3 + Math.sin(t * 29) * 1.5);
   const P = (x, y) => [v.ox + x * v.s, v.oy + y * v.s];
@@ -1075,11 +1104,11 @@ function renderDrive(t) {
   ctx.beginPath(); // windscreen outline in photo px
   [[1022, 236], [1376, 250], [1442, 336], [1032, 392]].forEach(([x, y], i) => { const [a, b] = P(x, y); i ? ctx.lineTo(a, b) : ctx.moveTo(a, b); });
   ctx.closePath(); ctx.clip();
-  drawIntroDude(bears[0], v, 1300, 410, 190, t, 0.92, false);  // Xiao Xiong at the wheel
-  drawIntroDude(bears[1], v, 1140, 400, 175, t + 1, 0.92, false);
+  drawIntroDude(crew[0], v, 1300, 410, 190, t, 0.92, false);  // the first dude takes the wheel
+  if (crew[1]) drawIntroDude(crew[1], v, 1140, 400, 175, t + 1, 0.92, false);
   ctx.fillStyle = "rgba(20,40,60,.28)"; ctx.fillRect(0, 0, w, h); // tinted glass over them
   ctx.restore();
-  introCaption("Driving to the air force base", t, DRIVE_LEN);
+  introCaption(caption, t, len);
 }
 
 // scene 2: the limo pulls up outside the base and the dudes walk in
@@ -1180,6 +1209,197 @@ function renderJump(t) {
   }
 
   introCaption(t < 3.8 ? "C-17 Globemaster III · rear ramp open · 800 km" : "GO GO GO!", t, JUMP_LEN);
+}
+
+// ---- ending cutscene: a safe landing earns a limo ride to the Minecraft base and its chest of diamonds ----
+const PICKUP_LEN = 5.4, OUT_DRIVE_LEN = 3.2, BASE_LEN = 6.4, CHEST_LEN = 7;
+const OUTRO_LEN = PICKUP_LEN + OUT_DRIVE_LEN + BASE_LEN + CHEST_LEN;
+const CHEST_OPEN = 1.3;  // seconds into the chest scene that the lid lifts
+const DIAMONDS = 64;     // a full stack
+const LIMO_ARRIVE = 1.8, LIMO_LEAVE = 3.8; // pickup: the limo has stopped / pulls away
+let outroT = 0, riders = [], endHtml = "", limoStop = 0, outroMusicOn = false, endAtBase = false;
+const easeOut = t => 1 - (1 - clamp(t, 0, 1)) ** 3;
+const frac = v => v - Math.floor(v);
+const hash = (i, k) => frac(Math.sin(i * 127.1 + k * 311.7) * 43758.5453); // repeatable "random" per diamond
+
+function startOutro(html) {
+  endHtml = html; outroT = 0; outroMusicOn = false;
+  riders.forEach(b => (b.fromX = b.x));
+  limoStop = clamp(riders.reduce((s, b) => s + b.x, 0) / riders.length + 50, 230, W - 230);
+}
+function finishOutro() {
+  state = "end"; endAtBase = true;
+  showOverlay(endHtml);
+}
+function updateOutro(dt) {
+  outroT += dt; time += dt;
+  for (const p of popups) { p.t -= dt; p.y -= 40 * dt; }
+  popups = popups.filter(p => p.t > 0);
+  if (outroT < PICKUP_LEN) {
+    // once the limo has stopped, the dudes waddle over to its door and climb in
+    riders.forEach((b, i) => {
+      const p = ease((outroT - LIMO_ARRIVE - 0.1 - i * 0.35) / 1.3), walking = p > 0 && p < 1;
+      b.x = lerp(b.fromX, limoStop - 50, p);
+      b.hop = walking ? Math.abs(Math.sin(time * 9 + i)) * 8 : 0;
+      b.angle = walking ? Math.sin(time * 9 + i) * 0.09 : 0;
+      b.hidden = p >= 1;
+    });
+  } else if (!outroMusicOn) { outroMusicOn = true; startMusic(scheduleOutroMusic); }
+  if (outroT >= OUTRO_LEN) finishOutro();
+}
+
+// pickup: the limo drives in along the ground from the left, waits, then leaves to the right (world coordinates)
+function drawWorldLimo(c) {
+  const L = LIMO_IMG, t = outroT, far = W + 500;
+  if (!L.ok) return;
+  const x = t < LIMO_LEAVE ? limoStop - far * (1 - easeOut(t / LIMO_ARRIVE)) : limoStop + far * ((t - LIMO_LEAVE) / (PICKUP_LEN - LIMO_LEAVE)) ** 2;
+  const moving = t < LIMO_ARRIVE || t > LIMO_LEAVE, lw = 440, lh = lw * L.naturalHeight / L.naturalWidth;
+  c.fillStyle = "rgba(0,0,0,.3)"; c.beginPath(); c.ellipse(x, START_ALT + 2, lw * 0.48, 12, 0, 0, 7); c.fill();
+  c.drawImage(L, x - lw / 2, START_ALT + 8 - lh + (moving ? Math.sin(time * 22) * 1.5 : 0), lw, lh);
+}
+
+// where a walker is along a path of [progress, x, y, height] waypoints
+function alongPath(path, p) {
+  let k = 1; while (k < path.length - 1 && p > path[k][0]) k++;
+  const A = path[k - 1], B = path[k], u = (p - A[0]) / (B[0] - A[0]);
+  return [lerp(A[1], B[1], u), lerp(A[2], B[2], u), lerp(A[3], B[3], u)];
+}
+
+// the limo pulls up in front of the base and the dudes climb the long wooden stairs (path in the 640x360 screenshot's px)
+const BASE_PATH = [[0, 250, 357, 66], [0.2, 306, 353, 62], [0.75, 316, 262, 32], [1, 318, 206, 13]];
+function renderBase(t) {
+  const w = W, h = innerHeight, img = IMGS.mcBase;
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, w, h);
+  if (!img.ok) return;
+  ctx.imageSmoothingEnabled = false; // keep the blocks crisp
+  const v = drawKenBurns(img, 318, 250, lerp(1, 1.08, ease(t / BASE_LEN)));
+  ctx.imageSmoothingEnabled = true;
+  [...riders].reverse().forEach((b, n) => {
+    const i = riders.length - 1 - n, p = ease((t - 2.5 - i * 0.5) / 3.2);
+    if (p <= 0) return;
+    const [x, y, bh] = alongPath(BASE_PATH, p);
+    drawIntroDude(b, v, x + (i ? 12 : -6) * (1 - p), y, bh, t, clamp((1 - p) / 0.12, 0, 1), p < 1);
+  });
+  // the limo is parked in the foreground with its nose at the foot of the stairs
+  const L = LIMO_IMG;
+  if (L.ok) {
+    const lw = Math.min(w * 0.62, h * 0.95), lh = lw * L.naturalHeight / L.naturalWidth, d = easeOut(t / 2.2);
+    const x = lerp(-lw, v.ox + 292 * v.s - lw / 2, d);
+    ctx.drawImage(L, x - lw / 2, h - 4 - lh + (d < 1 ? Math.sin(t * 22) * 2 : 0), lw, lh);
+  }
+  introCaption(t < 2.4 ? "Arriving at the Minecraft base" : "Up the stairs!", t, BASE_LEN);
+}
+
+// Minecraft-style blocks, drawn rather than photographed
+function mcPlanks(x, y, u, base, dark) {
+  ctx.fillStyle = base; ctx.fillRect(x, y, u + 1, u + 1);
+  ctx.fillStyle = dark;
+  for (let i = 0; i < 4; i++) {
+    ctx.fillRect(x, y + (i + 1) * u / 4 - u / 16, u + 1, u / 16);                 // gap between boards
+    ctx.fillRect(x + (i % 2 ? u * 0.25 : u * 0.7), y + i * u / 4, u / 16, u / 4); // board ends
+  }
+}
+function mcBlock(x, y, u, base, light, dark) {
+  const e = u / 8;
+  ctx.fillStyle = dark; ctx.fillRect(x, y, u, u);
+  ctx.fillStyle = light; ctx.fillRect(x, y, u - e, u - e);
+  ctx.fillStyle = base; ctx.fillRect(x + e, y + e, u - 2 * e, u - 2 * e);
+  ctx.fillStyle = light; ctx.fillRect(x + 2 * e, y + 2 * e, 2 * e, e); ctx.fillRect(x + 5 * e, y + 4 * e, e, e);
+  ctx.fillStyle = dark; ctx.fillRect(x + 4 * e, y + 5 * e, 2 * e, e); ctx.fillRect(x + 2 * e, y + 4 * e, e, e);
+}
+function drawDiamond(x, y, r, rot) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(rot); ctx.scale(r, r);
+  const poly = (col, pts) => { ctx.fillStyle = col; ctx.beginPath(); pts.forEach(([a, b], i) => (i ? ctx.lineTo(a, b) : ctx.moveTo(a, b))); ctx.closePath(); ctx.fill(); };
+  poly("#127f8c", [[-0.72, -0.62], [0.72, -0.62], [1.14, -0.1], [0, 1.16], [-1.14, -0.1]]); // outline
+  poly("#4ee3e8", [[-0.6, -0.5], [0.6, -0.5], [1, -0.1], [0, 1], [-1, -0.1]]);
+  poly("#b4fbff", [[-0.6, -0.5], [0.6, -0.5], [1, -0.1], [-1, -0.1]]);
+  poly("#2cc0cf", [[0.35, -0.1], [1, -0.1], [0, 1]]);
+  poly("#fff", [[-0.5, -0.4], [-0.1, -0.4], [-0.3, -0.2], [-0.7, -0.2]]);
+  ctx.restore();
+}
+
+// inside the base: walls of planks, stacks of diamond and gold blocks, and the chest. `still` holds the last frame behind the end screen
+function renderChest(t, still) {
+  const w = W, h = innerHeight, now = performance.now() / 1000;
+  const u = Math.ceil(Math.max(w / 11, h / 7)), floorY = Math.round(h * 0.8);
+  for (let x = 0; x < w; x += u) {
+    for (let y = floorY - u; y > -u; y -= u) mcPlanks(x, y, u, "#b08d57", "#7d6238");
+    for (let y = floorY; y < h; y += u) mcPlanks(x, y, u, "#6f5330", "#4a361d");
+  }
+  ctx.fillStyle = "rgba(0,0,0,.25)"; ctx.fillRect(0, floorY, w, 8);
+  // torches
+  for (const tx of [w * 0.27, w * 0.73]) {
+    const ty = floorY - u * 1.9, s = u / 8, fl = 0.75 + 0.25 * Math.sin(now * 11 + tx);
+    const g = ctx.createRadialGradient(tx, ty, 2, tx, ty, u * 1.6);
+    g.addColorStop(0, `rgba(255,200,90,${0.45 * fl})`); g.addColorStop(1, "rgba(255,200,90,0)");
+    ctx.fillStyle = g; ctx.fillRect(tx - u * 1.6, ty - u * 1.6, u * 3.2, u * 3.2);
+    ctx.fillStyle = "#6b4a23"; ctx.fillRect(tx - s / 2, ty, s, s * 4);
+    ctx.fillStyle = "#ffb52e"; ctx.fillRect(tx - s / 2, ty - s, s, s);
+    ctx.fillStyle = "#fff4b0"; ctx.fillRect(tx - s / 4, ty - s * 0.75, s / 2, s / 2);
+  }
+  // the loot: diamond blocks stacked on the left, gold on the right
+  const bs = Math.round(u * 0.62);
+  [3, 2, 1].forEach((n, col) => {
+    for (let r = 1; r <= n; r++) {
+      mcBlock(col * bs, floorY - r * bs, bs, "#62e3dc", "#c4fbf7", "#2aa39e");
+      mcBlock(w - (col + 1) * bs, floorY - r * bs, bs, "#f6d33c", "#fff7a8", "#c08f22");
+    }
+  });
+
+  const cs = clamp(Math.min(w, h) * 0.3, 120, 260), px = cs / 16, cx = w / 2, open = ease((t - CHEST_OPEN) / 0.5);
+  // the dudes on either side, jumping for joy once it opens
+  riders.forEach((b, i) => {
+    const img = PHOTOS[b.key];
+    if (!img.ok) return;
+    const dh = cs * 1.25, dw = dh * img.naturalWidth / img.naturalHeight;
+    const x = cx + (i ? 1 : -1) * cs * 1.15, y = floorY - Math.abs(Math.sin(now * 7 + i * 1.3)) * cs * (0.03 + 0.2 * open);
+    ctx.save(); ctx.translate(x, y); ctx.rotate(Math.sin(now * 7 + i * 1.3) * 0.08 * open);
+    ctx.drawImage(img, -dw / 2, -dh * 0.97, dw, dh);
+    ctx.restore();
+  });
+  // chest: body, the dark inside heaped with diamonds, then the lid lifting up and back
+  const bx = cx - 7 * px, bodyTop = floorY - 10 * px, lift = open * 7 * px;
+  if (open > 0) {
+    const g = ctx.createRadialGradient(cx, bodyTop, px, cx, bodyTop, cs * 1.5);
+    g.addColorStop(0, `rgba(120,255,255,${0.55 * open})`); g.addColorStop(1, "rgba(120,255,255,0)");
+    ctx.fillStyle = g; ctx.fillRect(cx - cs * 1.5, bodyTop - cs * 1.5, cs * 3, cs * 3);
+    ctx.fillStyle = "#1c1206"; ctx.fillRect(bx + px, bodyTop - lift, 12 * px, lift + px);
+    for (let i = 0; i < 9; i++) drawDiamond(bx + (2.2 + i * 1.2) * px, bodyTop - Math.min(lift - px, (1 + hash(i, 5) * 1.6) * px), px * 1.3, hash(i, 6) - 0.5);
+  }
+  ctx.fillStyle = "#3f2a0e"; ctx.fillRect(bx, bodyTop, 14 * px, 10 * px);
+  ctx.fillStyle = "#a4691c"; ctx.fillRect(bx + px, bodyTop + px, 12 * px, 8 * px);
+  ctx.fillStyle = "#8a5615"; ctx.fillRect(bx + px, bodyTop + 4 * px, 12 * px, px); ctx.fillRect(bx + px, bodyTop + 7 * px, 12 * px, px);
+  const lidH = 5 * px * (1 - 0.45 * open), lidY = bodyTop - lift - lidH + px * (1 - open);
+  ctx.fillStyle = "#3f2a0e"; ctx.fillRect(bx, lidY, 14 * px, lidH);
+  ctx.fillStyle = "#c58a2e"; ctx.fillRect(bx + px, lidY + px * 0.8, 12 * px, lidH - px * 1.6);
+  ctx.fillStyle = "#3f2a0e"; ctx.fillRect(cx - 1.5 * px, lidY + lidH - 2 * px, 3 * px, 4.5 * px * (1 - 0.5 * open)); // latch
+  ctx.fillStyle = "#d8d8d8"; ctx.fillRect(cx - px, lidY + lidH - 1.5 * px, 2 * px, 3.5 * px * (1 - 0.5 * open));
+  // diamonds burst out and rain down onto the floor
+  const grav = cs * 6, r = px * 1.7;
+  for (let i = 0; i < 30; i++) {
+    const a0 = t - CHEST_OPEN - 0.3 - i * 0.08;
+    if (a0 < 0) continue;
+    const ang = -Math.PI / 2 + (hash(i, 1) - 0.5) * 1.5, sp = cs * (3 + hash(i, 2) * 1.8), vy = Math.sin(ang) * sp;
+    const drop = floorY - r + hash(i, 3) * (h - floorY) * 0.5 - bodyTop;       // how far below the chest's rim it comes to rest
+    const a = Math.min(a0, (-vy + Math.sqrt(vy * vy + 2 * grav * drop)) / grav); // stop when it lands
+    drawDiamond(cx + Math.cos(ang) * sp * a, bodyTop + vy * a + grav * a * a / 2, r, a * 6 * (hash(i, 4) - 0.5));
+  }
+  const n = clamp(Math.floor((t - CHEST_OPEN - 0.3) / 0.045), 0, DIAMONDS);
+  if (n > 0) {
+    ctx.font = `900 ${Math.round(cs * 0.3)}px monospace`; ctx.textAlign = "center"; ctx.lineWidth = 8;
+    ctx.strokeStyle = "#0b3b42"; ctx.fillStyle = "#7ff6fb";
+    ctx.strokeText(`💎 × ${n}`, cx, floorY - cs * 1.75); ctx.fillText(`💎 × ${n}`, cx, floorY - cs * 1.75);
+  }
+  if (still) { ctx.fillStyle = "rgba(0,0,0,.55)"; ctx.fillRect(0, 0, w, h); return; } // dimmed behind the end screen
+  introCaption(t < CHEST_OPEN ? "Inside the base…" : "A chest full of DIAMONDS!", t, CHEST_LEN + 1); // no fade-out: the end screen follows
+}
+
+function renderOutro() {
+  if (endAtBase) return renderChest(CHEST_LEN, true);
+  let t = outroT - PICKUP_LEN;
+  if (t < OUT_DRIVE_LEN) return renderDrive(t, OUT_DRIVE_LEN, "Off to the Minecraft base!", riders);
+  if ((t -= OUT_DRIVE_LEN) < BASE_LEN) return renderBase(t);
+  renderChest(t - BASE_LEN);
 }
 
 // ---- photographic sky: each atmosphere layer cross-fades into the next ----
@@ -1292,8 +1512,9 @@ function drawView(v, x0, vw, h, fy, skyW = vw, skyX = 0) {
   ctx.fillStyle = "#e53935"; ctx.fillRect(W / 2 - 120, START_ALT - 4, 240, 8);
   ctx.fillStyle = "#fff"; ctx.fillRect(W / 2 - 60, START_ALT - 4, 120, 8);
 
-  ctx.fillStyle = "#ffd700";
-  for (const s of stars) if (!s.got) drawStar(ctx, s.x, s.y, 18);
+  for (const s of gems) {
+    if (!s.got && s.y > v.camTop - 100 && s.y < v.camTop + viewH + 100) drawDiamond(s.x, s.y + Math.sin(time * 3 + s.seed) * 4, 20, Math.sin(time * 2 + s.seed) * 0.15);
+  }
   for (const br of barriers) {
     if (!br.got && br.y > v.camTop - 100 && br.y < v.camTop + viewH + 100) drawBarrier(ctx, br.x, br.y + Math.sin(time * 3 + br.seed) * 6, br.seed);
   }
@@ -1319,6 +1540,7 @@ function drawView(v, x0, vw, h, fy, skyW = vw, skyX = 0) {
   }
 
   for (const b of bears) b.draw(ctx);
+  if (state === "outro") drawWorldLimo(ctx);
   ctx.font = "bold 26px sans-serif"; ctx.textAlign = "center"; ctx.lineWidth = 4;
   for (const p of popups) {
     ctx.globalAlpha = clamp(p.t, 0, 1);
@@ -1331,9 +1553,10 @@ function drawView(v, x0, vw, h, fy, skyW = vw, skyX = 0) {
 
 function render() {
   if (state === "start" || state === "intro") { renderIntro(); updateSidebar(); return; }
+  if (endAtBase || (state === "outro" && outroT >= PICKUP_LEN)) { renderOutro(); updateSidebar(); return; }
   const h = innerHeight;
   const live = bears.filter(b => !b.done);
-  const tracked = live.length ? live : bears;
+  const tracked = live.length ? live : riders.length ? riders : bears; // during the pickup, stay on whoever landed
   const ys = tracked.map(b => b.y);
 
   // split when both are alive and either can't share one readable view
@@ -1395,11 +1618,18 @@ function render() {
     ctx.strokeText(label, 16, y); ctx.fillText(label, 16, y);
     drawHealthBar(ctx, 16, y + 5, 180, 12, b.hp);
   });
+  // diamond counter (top right)
+  ctx.font = "bold 26px sans-serif"; ctx.textAlign = "right";
+  ctx.strokeText(`× ${diamonds}`, W - 16, 36); ctx.fillText(`× ${diamonds}`, W - 16, 36);
+  drawDiamond(W - 34 - ctx.measureText(`× ${diamonds}`).width, 25, 13, 0);
+  ctx.font = "bold 14px sans-serif";
+  ctx.strokeText(`Best: ${bestDiamonds}`, W - 16, 58); ctx.fillText(`Best: ${bestDiamonds}`, W - 16, 58);
 
   if (performance.now() < toast.until) {
     ctx.font = "bold 28px sans-serif"; ctx.textAlign = "center"; ctx.lineWidth = 5;
     ctx.strokeText(toast.text, W / 2, 60); ctx.fillText(toast.text, W / 2, 60);
   }
+  if (state === "outro") introCaption(outroT < LIMO_ARRIVE ? "Safe landing! Your limo is here" : outroT < LIMO_LEAVE ? "Hop in!" : "Off to the Minecraft base!", outroT, PICKUP_LEN, false);
 
   updateSidebar();
 }
@@ -1478,6 +1708,7 @@ function frame(now) {
   while (acc >= STEP) {
     if (state === "falling") update(STEP);
     else if (state === "intro") { introT += STEP; if (introT >= INTRO_LEN) start(); }
+    else if (state === "outro") updateOutro(STEP);
     acc -= STEP;
   }
   tickGameMusic();
