@@ -92,6 +92,20 @@ const PHOTOS = {
   xxm: loadImg("TheDudesAvatars/xiaoxiongmao.png"),
 };
 
+// a solid-red copy of an avatar (same shape, transparent background), built once and reused for the damage flash
+const RED_FLASH_TIME = 0.5;
+const redCache = {};
+function redVersion(key) {
+  if (redCache[key]) return redCache[key];
+  const img = PHOTOS[key], cv = document.createElement("canvas");
+  cv.width = img.naturalWidth; cv.height = img.naturalHeight;
+  const g = cv.getContext("2d");
+  g.drawImage(img, 0, 0);
+  g.globalCompositeOperation = "source-atop"; // only paint where the avatar already has pixels
+  g.fillStyle = "rgba(255,20,20,.85)"; g.fillRect(0, 0, cv.width, cv.height);
+  return (redCache[key] = cv);
+}
+
 // ---- input ----
 // Xiao Xiong: arrow keys. Xiao Xiong Mao: A/D + W. Each dude opens their own parachute.
 const keys = {};
@@ -101,6 +115,12 @@ addEventListener("keydown", e => {
   keys[e.code] = true;
   if (["Space", "ArrowUp", "ArrowLeft", "ArrowRight", "ArrowDown"].includes(e.code)) e.preventDefault();
   if (e.code === "KeyR") return reset();
+  if (e.code === "KeyM") { // mute / unmute the intro music
+    muted = !muted;
+    if (muted) { stopMusic(); stopGameMusic(); } // unmuting mid-fall restarts the falling music on the next frame
+    toast = { text: muted ? "Music off (M)" : "Music on (M)", until: performance.now() + 1500 };
+    return;
+  }
   if (state === "start") { // 1 = single player (Xiao Xiong), 2 = both dudes; Space repeats the last choice
     if (e.code === "Digit1" || e.code === "Numpad1") return choosePlayers(1);
     if (e.code === "Digit2" || e.code === "Numpad2") return choosePlayers(2);
@@ -157,6 +177,7 @@ class Bear {
     this.done = null;                    // null | "landed" | "crashed"
     this.points = 0;
     this.hp = MAX_HP; this.dead = false; this.flash = 0; this.hitCd = 0;
+    this.redFlash = 0; // seconds left of the red "ouch" flash after taking damage
     this.lives = LIVES; this.invuln = 0; this.respawnAt = 0;
   }
   // hit the ground too fast: squash flat with a wobble, burst of stuffing, dust ring and a "SPLAT!"
@@ -212,8 +233,13 @@ class Bear {
     if (img.ok) {
       const w = IMG_H * img.naturalWidth / img.naturalHeight;
       c.drawImage(img, -w / 2, -IMG_H / 2, w, IMG_H);
+      if (this.redFlash > 0) { // damage: pulse the dude red, fading out
+        const pulse = 0.55 + 0.45 * Math.sin(this.redFlash * 38);
+        c.globalAlpha *= clamp(this.redFlash / RED_FLASH_TIME, 0, 1) * pulse;
+        c.drawImage(redVersion(this.key), -w / 2, -IMG_H / 2, w, IMG_H);
+      }
     } else {
-      c.fillStyle = this.key === "xx" ? "#b9793f" : "#eee";
+      c.fillStyle = this.redFlash > 0 ? "#e22" : this.key === "xx" ? "#b9793f" : "#eee";
       c.beginPath(); c.arc(0, 0, R, 0, 7); c.fill();
     }
     c.restore();
@@ -453,6 +479,7 @@ function choosePlayers(n) {
 
 let runId = 0;
 function reset() {
+  stopMusic(); stopGameMusic();
   runId++;
   deathEl.classList.remove("show");
   state = "start";
@@ -482,18 +509,229 @@ function reset() {
   obstacles.push(makeObstacle("iss", w * rand(0.3, 0.7), fracOfAlt(408) * START_ALT));
   for (let i = 0; i < 70; i++) clouds.push({ x: rand(0, 1), y: rand(fracOfAlt(10) * START_ALT, START_ALT), s: rand(0.6, 1.8) });
   spaceStars = Array.from({ length: 160 }, () => ({ x: Math.random(), y: Math.random(), r: rand(0.5, 1.8), p: rand(0, 6) }));
-  showOverlay("<h1>Xiao Xiong &amp; Xiao Xiong Mao</h1>Jump out of the C-17 and fall all the way to Earth!\n\n1 player: Xiao Xiong, ← → (or A D) steer, ↑ (or W) parachute\n2 players: Xiao Xiong ← → ↑ · Xiao Xiong Mao A D W · V: split screen\n\nThe air is thin up here. Open your parachute before you reach the ground!\nGrab the glowing health kits to heal. Each dude has 2 lives.\n\n<b>Press 1 for single player · Press 2 for two players</b>\n(or tap the left / right half of the screen)");
+  showOverlay("<h1>Xiao Xiong &amp; Xiao Xiong Mao</h1>Jump out of the C-17 and fall all the way to Earth!\n\n1 player: Xiao Xiong, ← → (or A D) steer, ↑ (or W) parachute\n2 players: Xiao Xiong ← → ↑ · Xiao Xiong Mao A D W · V: split screen\n\nThe air is thin up here. Open your parachute before you reach the ground!\nGrab the glowing health kits to heal. Each dude has 2 lives.\n\n<b>Press 1 for single player · Press 2 for two players</b>\n(or tap the left / right half of the screen)\nM: music on / off");
 }
 
 // cutscene: drive the limo to the air force base, walk in, board the C-17, take off, then walk off the ramp
 const DRIVE_LEN = 3.6, ARRIVE_LEN = 5.6, BOARD_LEN = 4.2, TAKEOFF_LEN = 3.8, JUMP_LEN = 7;
 const INTRO_LEN = DRIVE_LEN + ARRIVE_LEN + BOARD_LEN + TAKEOFF_LEN + JUMP_LEN;
 let introT = 0;
+// ---- intro music: synthesised with Web Audio and scored to the five cutscene scenes ----
+let music = null, muted = false;
+const midi = m => 440 * 2 ** ((m - 69) / 12);
+
+// the instruments: every time passed to them is relative to T0 on audio context `ac`; sound goes to node `out`
+function makeSynth(ac, out, T0) {
+  const nbuf = ac.createBuffer(1, ac.sampleRate * 2, ac.sampleRate), nd = nbuf.getChannelData(0);
+  for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+  // one note. o: type, g (gain), to (glide to this frequency), lp (low-pass Hz), sus (hold instead of decaying)
+  const tone = (t, f, d, o = {}) => {
+    const osc = ac.createOscillator(), g = ac.createGain(), peak = o.g ?? 0.15;
+    osc.type = o.type || "square"; osc.frequency.setValueAtTime(f, T0 + t);
+    if (o.to) osc.frequency.exponentialRampToValueAtTime(o.to, T0 + t + d);
+    g.gain.setValueAtTime(0.0001, T0 + t);
+    g.gain.linearRampToValueAtTime(peak, T0 + t + (o.sus ? 0.06 : 0.01));
+    if (o.sus) g.gain.setValueAtTime(peak, T0 + t + d - 0.12);
+    g.gain.exponentialRampToValueAtTime(0.0001, T0 + t + d);
+    let node = osc;
+    if (o.lp) { const fl = ac.createBiquadFilter(); fl.type = "lowpass"; fl.frequency.value = o.lp; osc.connect(fl); node = fl; }
+    node.connect(g); g.connect(out);
+    osc.start(T0 + t); osc.stop(T0 + t + d + 0.05);
+  };
+  // filtered noise burst. o: g, type, f (filter Hz), f2 (sweep to), swell (fade in over the whole length)
+  const noise = (t, d, o = {}) => {
+    const src = ac.createBufferSource(), fl = ac.createBiquadFilter(), g = ac.createGain(), peak = o.g ?? 0.2;
+    src.buffer = nbuf; src.loop = true;
+    fl.type = o.type || "highpass"; fl.frequency.setValueAtTime(o.f || 2000, T0 + t);
+    if (o.f2) fl.frequency.exponentialRampToValueAtTime(o.f2, T0 + t + d);
+    g.gain.setValueAtTime(0.0001, T0 + t);
+    if (o.swell) { g.gain.exponentialRampToValueAtTime(peak, T0 + t + d * 0.8); g.gain.exponentialRampToValueAtTime(0.0001, T0 + t + d); }
+    else { g.gain.linearRampToValueAtTime(peak, T0 + t + 0.005); g.gain.exponentialRampToValueAtTime(0.0001, T0 + t + d); }
+    src.connect(fl); fl.connect(g); g.connect(out);
+    src.start(T0 + t); src.stop(T0 + t + d + 0.05);
+  };
+  const kick = (t, g = 0.5) => tone(t, 150, 0.2, { type: "sine", to: 40, g });
+  const snare = (t, g = 0.22) => { noise(t, 0.13, { g, f: 1500 }); tone(t, 190, 0.08, { type: "triangle", g: g * 0.6 }); };
+  const hat = (t, g = 0.07) => noise(t, 0.04, { g, f: 7000 });
+  const crash = (t, g = 0.2) => noise(t, 1.4, { g, f: 4000 });
+  const chord = (t, notes, d, o) => notes.forEach(n => tone(t, midi(n), d, o));
+  return { tone, noise, kick, snare, hat, crash, chord };
+}
+
+// schedule the whole intro score on `ac`, starting at time T0, into node `out`
+function scheduleIntroMusic(ac, out, T0) {
+  const { tone, noise, kick, snare, hat, crash, chord } = makeSynth(ac, out, T0);
+
+  // 1) limo drive: a bouncy road groove (8 beats)
+  let t0 = 0, b = DRIVE_LEN / 8;
+  const bass = [40, 40, 52, 40, 43, 40, 45, 47, 40, 40, 52, 40, 47, 45, 43, 38];
+  const lead = [76, 0, 79, 76, 0, 83, 81, 0, 79, 0, 76, 79, 81, 0, 83, 86];
+  for (let i = 0; i < 16; i++) {
+    const t = t0 + i * b / 2;
+    tone(t, midi(bass[i]), b * 0.45, { type: "sawtooth", lp: 600, g: 0.22 });
+    if (lead[i]) tone(t, midi(lead[i]), b * 0.4, { g: 0.06 });
+    hat(t, i % 2 ? 0.09 : 0.05);
+    if (i % 2 === 0) kick(t);
+    if (i % 4 === 2) snare(t);
+  }
+
+  // 2) arriving at the air force base: a military march with a brass fanfare (12 beats)
+  t0 += DRIVE_LEN; b = ARRIVE_LEN / 12;
+  const fanfare = [60, 60, 64, 67, 72, 0, 67, 0, 72, 72, 76, 79];
+  for (let i = 0; i < 12; i++) {
+    const t = t0 + i * b;
+    snare(t, 0.2); snare(t + b * 0.5, 0.12); snare(t + b * 0.75, 0.12);
+    if (i % 2 === 0) kick(t, 0.4);
+    tone(t, midi(i % 2 ? 43 : 48), b * 0.8, { type: "triangle", g: 0.2 });
+    if (fanfare[i]) {
+      const d = i === 11 ? b * 1.1 : fanfare[i + 1] === 0 ? b * 1.8 : b * 0.85;
+      tone(t, midi(fanfare[i]), d, { type: "sawtooth", lp: 1900, g: 0.1, sus: true });
+      tone(t, midi(fanfare[i] - 12), d, { type: "sawtooth", lp: 1200, g: 0.06, sus: true });
+    }
+  }
+
+  // 3) boarding the C-17: a tense climb that builds to the take-off (8 beats)
+  t0 += ARRIVE_LEN; b = BOARD_LEN / 8;
+  const roots = [38, 38, 41, 41, 43, 43, 45, 46];
+  const pads = [[62, 65, 69], [65, 69, 72], [67, 70, 74], [69, 73, 76]];
+  for (let i = 0; i < 8; i++) {
+    const t = t0 + i * b;
+    kick(t, 0.45);
+    tone(t, midi(roots[i]), b * 0.4, { type: "sawtooth", lp: 500, g: 0.22 });
+    tone(t + b / 2, midi(roots[i]), b * 0.4, { type: "sawtooth", lp: 500, g: 0.16 });
+    if (i % 2 === 0) chord(t, pads[i / 2], b * 2, { type: "sawtooth", lp: 1300, g: 0.035 + i * 0.004, sus: true });
+  }
+  for (let k = 0; k < 16; k++) snare(t0 + b * 6 + k * b / 8, 0.04 + k * 0.012); // snare roll into the take-off
+
+  // 4) take-off: engines spool up, then a triumphant chord as the C-17 climbs
+  t0 += BOARD_LEN;
+  noise(t0, TAKEOFF_LEN, { g: 0.22, type: "lowpass", f: 150, f2: 3500, swell: true });
+  tone(t0, 55, TAKEOFF_LEN, { type: "sawtooth", to: 165, lp: 900, g: 0.12, sus: true });
+  tone(t0, 82.4, TAKEOFF_LEN, { type: "sawtooth", to: 247, lp: 900, g: 0.07, sus: true });
+  const lift = t0 + TAKEOFF_LEN * 0.45;
+  crash(lift, 0.16); kick(lift, 0.6);
+  chord(lift, [45, 57, 64, 69, 73, 76], TAKEOFF_LEN * 0.55, { type: "sawtooth", lp: 2600, g: 0.05, sus: true });
+  [69, 73, 76, 81, 85, 88].forEach((n, i) => tone(lift + 0.25 + i * 0.16, midi(n), 0.5, { g: 0.05 }));
+
+  // 5) the jump: wind and a heartbeat on the ramp, a hit on "GO GO GO!", then falling whistles
+  t0 += TAKEOFF_LEN;
+  noise(t0, JUMP_LEN, { g: 0.12, type: "bandpass", f: 500, f2: 1400, swell: true });
+  tone(t0, midi(81), 3.8, { type: "sawtooth", lp: 1500, g: 0.025, sus: true });
+  tone(t0, midi(82), 3.8, { type: "sawtooth", lp: 1500, g: 0.02, sus: true }); // uneasy semitone
+  for (let t = 0.3; t < 3.7; t += 0.85) { kick(t0 + t, 0.5); kick(t0 + t + 0.19, 0.32); }
+  const go = t0 + 3.9;
+  crash(go, 0.22); kick(go, 0.7);
+  chord(go, [40, 52, 59, 64, 67, 71], 2.6, { type: "sawtooth", lp: 2200, g: 0.05, sus: true });
+  tone(t0 + 4.4, 1800, 1.9, { type: "sine", to: 300, g: 0.08, sus: true });  // Xiao Xiong falls away
+  tone(t0 + 4.55, 1500, 1.9, { type: "sine", to: 250, g: 0.06, sus: true }); // Xiao Xiong Mao follows
+}
+
+function startMusic() {
+  stopMusic();
+  const AC = globalThis.AudioContext || globalThis.webkitAudioContext;
+  if (!AC || muted) return;
+  try {
+    const ac = new AC(), master = ac.createGain();
+    const limiter = ac.createDynamicsCompressor(); // keeps the loud take-off and "GO!" hits from distorting
+    master.gain.value = 0.6; master.connect(limiter); limiter.connect(ac.destination);
+    scheduleIntroMusic(ac, master, ac.currentTime + 0.05);
+    music = { ac, master };
+  } catch (e) { music = null; } // no audio device: play the intro silently
+}
+function stopMusic() {
+  if (!music) return;
+  const m = music; music = null;
+  m.master.gain.setTargetAtTime(0, m.ac.currentTime, 0.08); // quick fade so skipping doesn't click
+  setTimeout(() => m.ac.close(), 600);
+}
+
+// ---- falling music: a loop written one bar at a time, so it can follow the fall ----
+// Each atmosphere layer adds instruments and speeds up: drifting pads in space, full-speed drums near the ground.
+let gameMusic = null;
+const GM_BEAT = [0.5, 0.47, 0.44, 0.41, 0.375];                 // seconds per beat in each layer (120 -> 160 bpm)
+const GM_CHORDS = [[45, 57, 60, 64], [41, 53, 57, 60], [48, 60, 64, 67], [43, 55, 59, 62]]; // Am F C G: [bass, triad]
+const GM_ARP = [1, 2, 3, 2, 1, 3, 2, 3];
+const GM_LEAD = [[81, 0, 84, 81, 0, 79, 81, 0], [77, 0, 81, 84, 0, 81, 77, 0], [79, 0, 84, 88, 0, 84, 79, 0], [79, 0, 83, 86, 0, 83, 81, 79]];
+
+function scheduleGameBar(m, layer, bar) {
+  const { tone, noise, kick, snare, hat, crash, chord } = m.synth, t0 = m.nextBar, b = GM_BEAT[layer], c = GM_CHORDS[bar % 4];
+  if (layer !== m.layer) { // crossing into a new layer: a crash and a whoosh mark the change
+    if (m.layer !== -1) { crash(t0, 0.14); noise(t0, b * 2, { g: 0.1, type: "bandpass", f: 4000, f2: 300 }); }
+    m.layer = layer;
+  }
+  chord(t0, c.slice(1), b * 4, { type: "sawtooth", lp: layer < 2 ? 800 : 1400, g: layer < 2 ? 0.04 : 0.028, sus: true }); // pad
+  if (layer < 2) { // space: slow, floating
+    for (let i = 0; i < 4; i++) tone(t0 + i * b, midi(c[GM_ARP[i * 2]] + 12), b * 1.6, { type: "sine", g: 0.07 });
+    tone(t0, midi(c[0] - 12), b * 3.5, { type: "sine", g: 0.16, sus: true });
+    if (layer === 1) { kick(t0, 0.3); for (let i = 0; i < 8; i++) hat(t0 + i * b / 2, 0.025); }
+    return;
+  }
+  for (let i = 0; i < 8; i++) {
+    const t = t0 + i * b / 2;
+    tone(t, midi(c[0] - (layer >= 3 && i % 2 ? 0 : 12)), b * 0.42, { type: "sawtooth", lp: 550, g: 0.17 }); // bass
+    tone(t, midi(c[GM_ARP[i]] + 12), b * 0.35, { g: 0.035 });                                                // arpeggio
+    if (i % 2 === 0) kick(t, 0.42);
+    if (layer >= 3) {
+      hat(t, i % 2 ? 0.07 : 0.04);
+      if (layer === 4) hat(t + b / 4, 0.03);
+      if (i % 4 === 2) snare(t, 0.17);
+      const n = GM_LEAD[bar % 4][i];
+      if (n) tone(t, midi(n + (layer === 4 ? 0 : -12)), b * 0.45, { type: "square", g: 0.05 });
+    }
+  }
+}
+
+function startGameMusic() {
+  stopGameMusic();
+  const AC = globalThis.AudioContext || globalThis.webkitAudioContext;
+  if (!AC || muted) return;
+  try {
+    const ac = new AC(), master = ac.createGain(), limiter = ac.createDynamicsCompressor();
+    master.gain.value = 0.5; master.connect(limiter); limiter.connect(ac.destination);
+    gameMusic = { ac, master, synth: makeSynth(ac, master, 0), nextBar: ac.currentTime + 0.08, bar: 0, layer: -1 };
+  } catch (e) { gameMusic = null; }
+}
+function stopGameMusic(after = 0) {
+  if (!gameMusic) return;
+  const m = gameMusic; gameMusic = null;
+  if (!after) m.master.gain.setTargetAtTime(0, m.ac.currentTime, 0.08);
+  setTimeout(() => m.ac.close(), 600 + after * 1000);
+}
+// called every frame: keep about a quarter of a second of music scheduled ahead, and follow pause
+function tickGameMusic() {
+  const m = gameMusic;
+  if (!m) { if (state === "falling" && !muted && !music) startGameMusic(); return; }
+  if (state === "paused") { if (m.ac.state === "running") m.ac.suspend(); return; }
+  if (m.ac.state === "suspended") m.ac.resume();
+  if (state !== "falling") return;
+  const live = bears.filter(b => !b.done), ref = live.length ? live : players();
+  const layer = layerIndex(altKm(Math.max(...ref.map(b => b.y)))); // follow whoever is lowest
+  if (m.nextBar < m.ac.currentTime) m.nextBar = m.ac.currentTime + 0.05; // fell behind (tab was hidden): don't play catch-up
+  while (m.nextBar < m.ac.currentTime + 0.25) {
+    scheduleGameBar(m, layer, m.bar++);
+    m.nextBar += GM_BEAT[layer] * 4;
+  }
+}
+// the run is over: cut the loop and play a short ending
+function endGameMusic(won) {
+  const m = gameMusic;
+  if (!m) return;
+  const now = m.ac.currentTime;
+  m.master.gain.cancelScheduledValues(now);
+  const { tone, crash, kick } = m.synth;
+  if (won) { [60, 64, 67, 72, 76, 79, 84].forEach((n, i) => tone(now + 0.1 + i * 0.11, midi(n), i === 6 ? 1.2 : 0.3, { g: 0.09 })); crash(now + 0.76, 0.14); }
+  else { [64, 63, 62, 61, 60, 52].forEach((n, i) => tone(now + 0.1 + i * 0.22, midi(n), i === 5 ? 1.3 : 0.3, { type: "sawtooth", lp: 900, g: 0.12 })); kick(now + 1.2, 0.5); }
+  stopGameMusic(3);
+}
+
 function startIntro() {
   state = "intro"; introT = 0;
   showOverlay("");
+  startMusic(); // started by the key press / tap, which is what lets the browser play sound
 }
 function start() {
+  stopMusic();
+  startGameMusic();
   state = "falling";
   showOverlay("");
   snapViews = true;
@@ -504,7 +742,7 @@ const hearts = b => "♥".repeat(b.lives) + "♡".repeat(LIVES - b.lives);
 function hurt(b, o, amount, prefix) {
   if (b.invuln > 0) return; // just lost a life: briefly protected
   const dmg = Math.round(amount);
-  b.hp = Math.max(0, b.hp - dmg); b.hitCd = 0.6; b.flash = 0.6;
+  b.hp = Math.max(0, b.hp - dmg); b.hitCd = 0.6; b.redFlash = RED_FLASH_TIME;
   score = Math.max(0, score - dmg * 2);
   popups.push({ x: b.x, y: b.y - 60, t: 1.2, text: `${prefix}-${dmg}` });
   if (b.hp > 0 || b.dead) return;
@@ -517,7 +755,7 @@ function hurt(b, o, amount, prefix) {
 function update(dt) {
   time += dt;
   for (const b of bears) {
-    b.flash = Math.max(0, b.flash - dt); b.hitCd = Math.max(0, b.hitCd - dt); b.invuln = Math.max(0, b.invuln - dt);
+    b.flash = Math.max(0, b.flash - dt); b.redFlash = Math.max(0, b.redFlash - dt); b.hitCd = Math.max(0, b.hitCd - dt); b.invuln = Math.max(0, b.invuln - dt);
     if (b.invuln > 0) b.flash = Math.max(b.flash, 0.1); // keep blinking while protected
     // after a splat with lives to spare, come back above the ground for another go
     if (b.respawnAt && time >= b.respawnAt) {
@@ -633,6 +871,7 @@ function update(dt) {
   const allDead = bears.every(b => b.dead);
   if (allDead || bears.every(b => b.done && !b.respawnAt)) {
     state = "end";
+    endGameMusic(players().some(b => b.done === "landed"));
     const splatted = bears.some(b => b.done === "crashed");
     const line = b => `${b.name}: ${b.dead ? `out of lives, knocked out by ${b.killer}!` : b.done === "landed" ? `soft landing! +${b.points}` : "splat! Out of lives"}`;
     const html = `<h1>${allDead ? "Game over" : "Touchdown!"}</h1>${players().map(line).join("\n")}\n\nScore: ${Math.round(score)}\n\nPress Space, R or tap to play again`;
@@ -705,7 +944,7 @@ function introCaption(text, t, len) {
   ctx.strokeStyle = "rgba(0,0,0,.7)"; ctx.lineWidth = 4;
   ctx.strokeText(text, 20, h - 28); ctx.fillText(text, 20, h - 28);
   ctx.textAlign = "right"; ctx.font = "14px sans-serif";
-  ctx.strokeText("Space to skip", w - 16, h - 28); ctx.fillText("Space to skip", w - 16, h - 28);
+  ctx.strokeText("Space to skip · M mutes music", w - 16, h - 28); ctx.fillText("Space to skip · M mutes music", w - 16, h - 28);
   const fade = 1 - clamp(Math.min(t / 0.35, (len - t) / 0.35), 0, 1); // fade through black at both ends
   if (fade > 0) { ctx.fillStyle = `rgba(0,0,0,${fade})`; ctx.fillRect(0, 0, w, h); }
 }
@@ -1177,6 +1416,7 @@ function frame(now) {
     else if (state === "intro") { introT += STEP; if (introT >= INTRO_LEN) start(); }
     acc -= STEP;
   }
+  tickGameMusic();
   render();
   requestAnimationFrame(frame);
 }
