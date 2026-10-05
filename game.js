@@ -95,10 +95,32 @@ const IMGS = {
   tropo: loadImg("backgrounds/troposphere.jpg"),
   mcBase: loadImg("backgrounds/minecraft_base.png"),
 };
-const PHOTOS = {
-  xx: loadImg("TheDudesAvatars/xiaoxiong.png"),
-  xxm: loadImg("TheDudesAvatars/xiaoxiongmao.png"),
+// ---- characters: the two dudes are free, the rest are bought in the Marketplace ----
+const TIERS = { starter: { label: "Starter", cost: 0 }, common: { label: "Common", cost: 100 }, rare: { label: "Rare", cost: 200 }, legendary: { label: "Legendary", cost: 400 } };
+// power stats (all optional): maxHp, steer (x STEER), gemReach (extra px), bonusEvery (a bonus diamond every n grabbed),
+// chuteRate (opening speed), healMul (health kits), junkArmor (damage x from space junk), bounces (hard landings survived)
+const CHARACTERS = {
+  xx: { name: "Xiao Xiong", src: "TheDudesAvatars/xiaoxiong.png", tier: "starter", color: "#b9793f",
+    power: "Every 5th diamond he grabs brings a bonus diamond", bonusEvery: 5 },
+  xxm: { name: "Xiao Xiong Mao", src: "TheDudesAvatars/xiaoxiongmao.png", tier: "starter", color: "#eee",
+    power: "Parachute opens twice as fast", chuteRate: 2 },
+  wolfie: { name: "Wolfie", src: "Character_pics/Wolfie.png", tier: "common", color: "#ddd",
+    power: "Grabs diamonds from further away", gemReach: 34 },
+  qiuqiu: { name: "Xiao Qiu Qiu", src: "Character_pics/XiaoQiuQiu.png", tier: "common", color: "#2bb5a8",
+    power: "Bounces instead of splatting, once per jump", bounces: 1 },
+  qiugege: { name: "Xiao Qiu Qiu Ge Ge", src: "Character_pics/xiaoqiuqiugegepng.png", tier: "common", color: "#f0a050",
+    power: "Bounces instead of splatting, once per jump", bounces: 1 },
+  penguin: { name: "Mr Hot Penguin", src: "Character_pics/MrHotPenguin.png", tier: "rare", color: "#222",
+    power: "Too hot for cold space junk: half damage from satellites, debris and the space station", junkArmor: 0.5 },
+  wolfwolf: { name: "Wolf Wolf", src: "Character_pics/WolfWolf.png", tier: "rare", color: "#555",
+    power: "Steers 30% faster", steer: 1.3 },
+  mama: { name: "Xiao Xiong Ma Ma", src: "Character_pics/xiaoXiongMaMa.png", tier: "legendary", color: "#c8955a",
+    power: "150 HP instead of 100", maxHp: 150 },
+  maomama: { name: "Xiao Xiong Mao Ma Ma", src: "Character_pics/XiaoXiongMaoMaMa.png", tier: "legendary", color: "#eee",
+    power: "Health kits heal twice as much", healMul: 2 },
 };
+const SPACE_JUNK = new Set(["satellite", "debris", "iss"]);
+const PHOTOS = Object.fromEntries(Object.entries(CHARACTERS).map(([k, ch]) => [k, loadImg(ch.src)]));
 
 // a solid-red copy of an avatar (same shape, transparent background), built once and reused for the damage flash
 const RED_FLASH_TIME = 0.5;
@@ -123,16 +145,16 @@ addEventListener("keydown", e => {
   keys[e.code] = true;
   if (["Space", "ArrowUp", "ArrowLeft", "ArrowRight", "ArrowDown"].includes(e.code)) e.preventDefault();
   if (e.code === "KeyR") return reset();
-  if (e.code === "KeyM") { // mute / unmute the intro music
-    muted = !muted;
-    if (muted) { stopMusic(); stopGameMusic(); } // unmuting mid-fall restarts the falling music on the next frame
-    toast = { text: muted ? "Music off (M)" : "Music on (M)", until: performance.now() + 1500 };
-    return;
-  }
-  if (state === "start") { // 1 = single player (Xiao Xiong), 2 = both dudes; Space repeats the last choice
-    if (e.code === "Digit1" || e.code === "Numpad1") return choosePlayers(1);
-    if (e.code === "Digit2" || e.code === "Numpad2") return choosePlayers(2);
-    if (e.code === "Space") return startIntro();
+  if (e.code === "KeyM") return toggleMusic();
+  if (state === "start") { // start screens; 1 = single player (Xiao Xiong), 2 = both dudes
+    if (e.code === "Escape") { balanceOpen = false; return showScreen("title"); }
+    if (screen === "title" && ["Space", "Enter"].includes(e.code)) return showScreen("players");
+    if (screen === "title" || screen === "players") {
+      if (e.code === "Digit1" || e.code === "Numpad1") return choosePlayers(1);
+      if (e.code === "Digit2" || e.code === "Numpad2") return choosePlayers(2);
+      if (screen === "players" && e.code === "Space") return choosePlayers(numPlayers); // Space repeats the last choice
+    }
+    if (screen === "pick" && ["Space", "Enter"].includes(e.code)) return startIntro();
     return;
   }
   if (state === "intro" && ["Space", "ArrowUp", "KeyW", "Enter"].includes(e.code)) return start(); // skip cutscene
@@ -154,7 +176,7 @@ addEventListener("keydown", e => {
 });
 addEventListener("keyup", e => (keys[e.code] = false));
 canvas.addEventListener("pointerdown", e => {
-  if (state === "start") return choosePlayers(e.clientX < W / 2 ? 1 : 2); // tap left half: 1 player, right half: 2
+  if (state === "start") return; // the start screens use their buttons
   if (state === "intro") return start();
   if (state === "outro") { if (outroT > 1) finishOutro(); return; }
   if (state === "end") return reset();
@@ -167,6 +189,12 @@ addEventListener("pointerup", () => (touchDir = 0));
 const rand = (a, b) => a + Math.random() * (b - a);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 function showOverlay(html) { overlay.innerHTML = html; }
+function toggleMusic() {
+  muted = !muted;
+  if (muted) { stopMusic(); stopGameMusic(); } // unmuting mid-fall restarts the falling music on the next frame
+  toast = { text: muted ? "Music off (M)" : "Music on (M)", until: performance.now() + 1500 };
+  if (state === "start" && screen === "settings") showScreen("settings");
+}
 
 // full-screen strobe + slam-in text when a dude dies
 const deathEl = document.getElementById("death");
@@ -179,17 +207,28 @@ function deathFlash(name) {
 
 // ---- bear ----
 class Bear {
-  constructor(name, key, left, right, x, vx) {
-    this.name = name; this.key = key; this.left = left; this.right = right;
+  constructor(slot, key, left, right, x, vx) {
+    this.slot = slot; this.left = left; this.right = right; // slot 0: Player 1, slot 1: Player 2
+    this.setChar(key);
     this.x = x; this.y = 0; this.vx = vx; this.vy = 0;
     this.angle = 0; this.av = 0;
     this.chute = false; this.deploy = 0; // deploy 0..1 ramps up so opening isn't an instant stop
     this.done = null;                    // null | "landed" | "crashed"
     this.points = 0;
-    this.hp = MAX_HP; this.dead = false; this.flash = 0; this.hitCd = 0;
+    this.hp = this.maxHp; this.dead = false; this.flash = 0; this.hitCd = 0;
     this.shield = 0;   // seconds of forcefield left
     this.redFlash = 0; // seconds left of the red "ouch" flash after taking damage
     this.lives = LIVES; this.invuln = 0; this.respawnAt = 0;
+    this.maxLives = LIVES; this.armor = 1; this.safeSpeed = SAFE_LANDING_SPEED; // changed by marketplace upgrades
+  }
+  // become one of the CHARACTERS, with its power
+  setChar(key) {
+    const ch = CHARACTERS[key];
+    this.key = key; this.name = ch.name;
+    this.maxHp = ch.maxHp || MAX_HP; this.hp = this.maxHp;
+    this.steer = ch.steer || 1; this.gemReach = ch.gemReach || 0; this.bonusEvery = ch.bonusEvery || 0; this.gemsGrabbed = 0;
+    this.chuteRate = ch.chuteRate || 1; this.healMul = ch.healMul || 1; this.junkArmor = ch.junkArmor || 1; this.bounces = ch.bounces || 0;
+    sbMarkers[this.slot].src = ch.src; sbMarkers[this.slot].alt = ch.name;
   }
   // hit the ground too fast: squash flat with a wobble, burst of stuffing, dust ring and a "SPLAT!"
   drawSplat(c) {
@@ -208,7 +247,7 @@ class Bear {
     c.save(); c.scale(sx, sy);
     const img = PHOTOS[this.key];
     if (img.ok) { const w = IMG_H * img.naturalWidth / img.naturalHeight; c.drawImage(img, -w / 2, -IMG_H, w, IMG_H); }
-    else { c.fillStyle = this.key === "xx" ? "#b9793f" : "#eee"; c.beginPath(); c.arc(0, -R, R, 0, 7); c.fill(); }
+    else { c.fillStyle = CHARACTERS[this.key].color; c.beginPath(); c.arc(0, -R, R, 0, 7); c.fill(); }
     c.restore();
     // stuffing flying out and falling back
     for (const f of this.fluff) {
@@ -231,13 +270,57 @@ class Bear {
     c.strokeStyle = "rgba(0,0,0,.6)"; c.lineWidth = 3;
     c.strokeText(this.name, this.x, ground + 22); c.fillText(this.name, this.x, ground + 22);
   }
+  // safe touchdown: knees-bend squash, a little hop, then a victory hop with a backflip while the chute collapses
+  landingPose() {
+    const e = (performance.now() - this.landAt) / 1000;
+    const squash = (t0, len, k) => { const p = (e - t0) / len; return p > 0 && p < 1 ? Math.sin(p * Math.PI) * k : 0; };
+    const hop = (t0, len, hgt) => { const p = (e - t0) / len; return p > 0 && p < 1 ? 4 * p * (1 - p) * hgt : 0; };
+    const sq = squash(0, 0.22, 0.32) + squash(0.6, 0.14, 0.18) + squash(1.36, 0.2, 0.22);
+    const flip = clamp((e - 0.78) / 0.5, 0, 1);
+    return {
+      e, sy: 1 - sq, sx: 1 + sq * 0.7,
+      lift: hop(0.22, 0.38, 38) + hop(0.74, 0.62, 110),
+      spin: ease(flip) * Math.PI * 2 * (this.slot ? 1 : -1),
+    };
+  }
+  // the canopy sags and drapes over to one side, then fades into the grass
+  drawCollapsedChute(c, e) {
+    const p = clamp(e / 0.9, 0, 1);
+    if (p >= 1 || this.deploy <= 0.05) return;
+    c.save();
+    c.translate(this.x, this.y + IMG_H / 2);
+    c.rotate(ease(p) * 1.35 * (this.chuteSide || 1));
+    c.scale(1, 1 - 0.55 * p);
+    c.translate(0, -IMG_H / 2);
+    c.globalAlpha = 1 - p * p;
+    drawChute(c, this.deploy);
+    c.restore();
+  }
+  // little dust puffs kicked up on both sides of the feet
+  drawDust(c, e, t0, size) {
+    const p = (e - t0) / 0.6;
+    if (p <= 0 || p >= 1) return;
+    const fy = this.y + IMG_H / 2;
+    c.fillStyle = `rgba(235,225,200,${0.7 * (1 - p)})`;
+    for (const side of [-1, 1]) for (let i = 0; i < 3; i++) {
+      c.beginPath();
+      c.arc(this.x + side * (18 + i * 14 + p * size), fy - 6 - i * 4 - p * 10, (6 + i * 2) * (0.6 + p), 0, 7);
+      c.fill();
+    }
+  }
   toggleChute() { if (!this.done && !this.dead) { this.chute = !this.chute; this.av += rand(-2, 2); } }
   draw(c) {
     if (this.dead || this.hidden) return; // dead dudes vanish from the sky; hidden ones are inside the limo
     if (this.done === "crashed") return this.drawSplat(c);
+    const land = this.done === "landed" && this.landAt ? this.landingPose() : null;
+    if (land) { this.drawCollapsedChute(c, land.e); this.drawDust(c, land.e, 0, 60); this.drawDust(c, land.e, 1.36, 40); }
     c.save();
-    c.translate(this.x, this.y - (this.hop || 0));
+    c.translate(this.x, this.y - (this.hop || 0) - (land ? land.lift : 0));
     if (this.deploy > 0.05 && !this.done) drawChute(c, this.deploy);
+    if (land) { // squash pinned at the feet, flip around the middle
+      c.translate(0, IMG_H / 2); c.scale(land.sx, land.sy); c.translate(0, -IMG_H / 2);
+      c.rotate(land.spin);
+    }
     c.rotate(this.angle);
     if (this.flash > 0 && Math.floor(this.flash * 20) % 2) c.globalAlpha = 0.35;
     const img = PHOTOS[this.key];
@@ -250,7 +333,7 @@ class Bear {
         c.drawImage(redVersion(this.key), -w / 2, -IMG_H / 2, w, IMG_H);
       }
     } else {
-      c.fillStyle = this.redFlash > 0 ? "#e22" : this.key === "xx" ? "#b9793f" : "#eee";
+      c.fillStyle = this.redFlash > 0 ? "#e22" : CHARACTERS[this.key].color;
       c.beginPath(); c.arc(0, 0, R, 0, 7); c.fill();
     }
     c.restore();
@@ -260,14 +343,14 @@ class Bear {
     const ty = this.y - IMG_H / 2 - 8 - (this.deploy > 0.05 && !this.done ? 140 * this.deploy : 0);
     c.strokeText(this.name, this.x, ty);
     c.fillText(this.name, this.x, ty);
-    drawHealthBar(c, this.x - 30, ty - 20, 60, 8, this.hp);
+    drawHealthBar(c, this.x - 30, ty - 20, 60, 8, this.hp, this.maxHp);
   }
 }
 
 function hpColor(hp) { return hp > 60 ? "#4cd964" : hp > 30 ? "#ffcc00" : "#ff3b30"; }
-function drawHealthBar(c, x, y, w, h, hp) {
+function drawHealthBar(c, x, y, w, h, hp, max = MAX_HP) {
   c.fillStyle = "rgba(0,0,0,.6)"; c.fillRect(x - 1, y - 1, w + 2, h + 2);
-  c.fillStyle = hpColor(hp); c.fillRect(x, y, w * clamp(hp, 0, MAX_HP) / MAX_HP, h);
+  c.fillStyle = hpColor(hp); c.fillRect(x, y, w * clamp(hp, 0, max) / max, h);
 }
 
 // barrier pick-up: a glowing blue hexagon with a shield emblem
@@ -301,7 +384,7 @@ function drawForcefield(c, x, y, left) {
   c.beginPath(); c.arc(0, 0, r - 5, time * 3, time * 3 + 0.9); c.stroke();
   // time left, as an arc that empties
   c.lineWidth = 3; c.strokeStyle = "#6cd0ff";
-  c.beginPath(); c.arc(0, 0, r + 6, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * left / SHIELD_TIME); c.stroke();
+  c.beginPath(); c.arc(0, 0, r + 6, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, left / SHIELD_TIME)); c.stroke();
   c.restore();
 }
 
@@ -518,6 +601,145 @@ function saveDiamonds(n) {
   try { localStorage.setItem(DIAMOND_KEY, JSON.stringify({ last: lastDiamonds, best: bestDiamonds })); } catch (e) {}
 }
 
+// ---- marketplace: diamonds go into a wallet and buy upgrades for the next jump ----
+const WALLET_KEY = "dudesSkydive.wallet";
+const UPGRADES = [
+  { id: "life", icon: "♥", name: "Extra life", desc: "Start with 3 lives instead of 2", cost: 60 },
+  { id: "shield", icon: "⬢", name: "Launch forcefield", desc: "A 10 s forcefield as you leave the plane", cost: 30 },
+  { id: "armor", icon: "🛡️", name: "Armor", desc: "Take 30% less damage from everything", cost: 50 },
+  { id: "chute", icon: "🪂", name: "Big parachute", desc: "Land safely even when coming in faster", cost: 40 },
+];
+// owned: upgrades bought and waiting for the next jump; chars: characters bought; picks: who Player 1 and 2 jump as
+let wallet = 0, owned = {}, chars = [], picks = ["xx", "xxm"];
+try {
+  const saved = JSON.parse(localStorage.getItem(WALLET_KEY));
+  if (saved) ({ wallet = 0, owned = {}, chars = [], picks = ["xx", "xxm"] } = saved);
+  else wallet = bestDiamonds; // first time with a wallet: start with your best run so far
+} catch (e) {}
+const hasChar = key => CHARACTERS[key] && (CHARACTERS[key].tier === "starter" || chars.includes(key));
+function checkPicks() { // fall back to the dudes if a pick isn't owned (e.g. after a reset) or both players picked the same one
+  if (!hasChar(picks[0])) picks[0] = "xx";
+  if (!hasChar(picks[1]) || picks[1] === picks[0]) picks[1] = picks[0] === "xxm" ? "xx" : "xxm";
+}
+checkPicks();
+function saveWallet() { try { localStorage.setItem(WALLET_KEY, JSON.stringify({ wallet, owned, chars, picks })); } catch (e) {} }
+function buyChar(key) {
+  const cost = TIERS[CHARACTERS[key].tier].cost;
+  if (hasChar(key) || wallet < cost) return;
+  wallet -= cost; chars.push(key); saveWallet();
+  showScreen("shop");
+}
+// on the pick screen: slot takes character key; if the other player had it, they swap
+function pickChar(slot, key) {
+  if (!hasChar(key)) return;
+  const other = 1 - slot;
+  if (numPlayers === 2 && picks[other] === key) picks[other] = picks[slot];
+  picks[slot] = key;
+  if (numPlayers === 1 && picks[1] === key) picks[1] = key === "xxm" ? "xx" : "xxm"; // keep the sitting-out slot distinct
+  saveWallet();
+  bears.forEach((b, i) => b.setChar(picks[i]));
+  showScreen("pick");
+}
+function buy(id) {
+  const u = UPGRADES.find(u => u.id === id);
+  if (!u || owned[id] || wallet < u.cost) return;
+  wallet -= u.cost; owned[id] = true; saveWallet();
+  showScreen("shop");
+}
+// bought upgrades are used up by the jump they're used on
+function applyUpgrades() {
+  for (const b of players()) {
+    if (owned.life) b.lives = b.maxLives = LIVES + 1;
+    if (owned.shield) b.shield = 10;
+    if (owned.armor) b.armor = 0.7;
+    if (owned.chute) b.safeSpeed = SAFE_LANDING_SPEED * 1.6;
+  }
+  owned = {}; saveWallet();
+}
+
+// ---- start screens: title (Play / Settings / Marketplace / Check balance), player choice, settings, marketplace ----
+let screen = "title", balanceOpen = false, confirmReset = false;
+const backBtn = `<button data-go="title" class="glass small">← Back</button>`;
+function showScreen(name) {
+  if (name !== screen) { balanceOpen = false; confirmReset = false; }
+  screen = name;
+  const purse = `<div class="wallet">💎 ${wallet} diamonds</div>`;
+  let html;
+  if (name === "title") {
+    const ready = UPGRADES.filter(u => owned[u.id]);
+    html = `<h1>Xiao Xiong &amp; Xiao Xiong Mao</h1><p>Skydive from space all the way down to your Minecraft base!</p>
+      <div class="stack">
+        <button data-go="players" class="glass big pulse">▶ Play</button>
+        <button data-go="settings" class="glass big">⚙️ Settings</button>
+        <button data-go="shop" class="glass big">🛒 Marketplace</button>
+      </div>
+      <button data-balance="1" class="glass small">💎 Check balance</button>
+      ${balanceOpen ? `<div class="balance"><h2>💎 Your diamonds</h2>
+        <div class="big-num">${wallet}</div><div class="hint">in your wallet</div>
+        <div class="stats"><span>Best run</span><b>${bestDiamonds}</b><span>Last run</span><b>${lastDiamonds}</b></div>
+        <div class="hint">Characters: ${Object.keys(CHARACTERS).filter(hasChar).length} / ${Object.keys(CHARACTERS).length}</div>
+        <div class="hint">${ready.length ? `Ready for the next jump: ${ready.map(u => `${u.icon} ${u.name}`).join(", ")}` : "No upgrades bought yet. Visit the Marketplace!"}</div>
+        <button data-balance="1" class="glass small">Close</button></div>` : ""}`;
+  } else if (name === "players") {
+    html = `<h1>Who's jumping?</h1>
+      <button data-players="1" class="glass big">1 Player</button><p class="hint">← → (or A D) steer, ↑ (or W) parachute</p>
+      <button data-players="2" class="glass big">2 Players</button><p class="hint">Player 1: ← → ↑ · Player 2: A D W</p>
+      <div class="panel">
+        <p>Jump out of the C-17 and fall all the way to Earth! The air is thin up here. Open your parachute before you reach the ground!</p>
+        <p>Next you pick who jumps. Buy more characters with special powers in the Marketplace!</p>
+        <p>Grab the glowing health kits to heal. Blue hexagons give a 2.5 s forcefield. Collect the diamonds! Each dude has 2 lives.</p>
+        <p>Land safely and a limo takes you to your Minecraft base!</p>
+        <p class="hint">P: pause · V: split screen · R: back to the start · M: music</p></div>${backBtn}`;
+  } else if (name === "pick") {
+    const mine = Object.keys(CHARACTERS).filter(hasChar);
+    const row = slot => `<div class="pick-row"><h2>Player ${slot + 1} <span class="hint">${slot ? "A D W" : numPlayers === 1 ? "← → ↑ or A D W" : "← → ↑"}</span></h2>
+      <div class="pick-grid">${mine.map(k => `<button data-pick="${slot}:${k}" class="pick-card tier-${CHARACTERS[k].tier}${picks[slot] === k ? " selected" : ""}">
+        <img src="${CHARACTERS[k].src}" alt=""><span>${CHARACTERS[k].name}</span></button>`).join("")}</div>
+      <p class="hint power">✨ ${CHARACTERS[picks[slot]].power}</p></div>`;
+    html = `<h1>Pick your character</h1>${row(0)}${numPlayers === 2 ? row(1) : ""}
+      <p class="hint">${mine.length < Object.keys(CHARACTERS).length ? "Unlock more characters in the Marketplace!" : "You've collected every character!"}</p>
+      <button data-jump="1" class="glass big pulse">▶ Jump!</button><button data-go="players" class="glass small">← Back</button>`;
+  } else if (name === "settings") {
+    html = `<h1>Settings</h1><div class="panel settings">
+      <div class="row"><span>🔊 Music</span><button data-music="1" class="glass small">${muted ? "Off" : "On"}</button></div>
+      <div class="row"><span>🖥️ Split screen (2 players)</span><button data-split="1" class="glass small">${SPLIT_LABELS[splitMode].split(" (")[0]}</button></div>
+      <div class="row"><span>💎 Reset diamonds &amp; purchases</span><button data-reset="1" class="glass small danger">${confirmReset ? "Tap again to confirm" : "Reset"}</button></div>
+      </div>${backBtn}`;
+  } else {
+    const card = k => {
+      const ch = CHARACTERS[k], t = TIERS[ch.tier], have = hasChar(k);
+      return `<div class="char-card tier-${ch.tier}"><span class="badge">${t.label}</span><img src="${ch.src}" alt="">
+        <b>${ch.name}</b><span class="hint">${ch.power}</span>
+        <button data-char="${k}" class="glass small" ${have || wallet < t.cost ? "disabled" : ""}>${have ? "Owned ✔" : `💎 ${t.cost}`}</button></div>`;
+    };
+    html = `${backBtn}<h1>Marketplace</h1>${purse}<h2>Characters</h2><p class="hint">Pick who you jump as after you press Play.</p>
+      <div class="char-grid">${Object.keys(CHARACTERS).map(card).join("")}</div>
+      <h2>Upgrades</h2><p class="hint">Upgrades last for your next jump.</p><div class="shop">${UPGRADES.map(u => `
+      <div class="item"><span class="icon">${u.icon}</span><div><b>${u.name}</b><br><span class="hint">${u.desc}</span></div>
+      <button data-buy="${u.id}" class="glass small" ${owned[u.id] || wallet < u.cost ? "disabled" : ""}>${owned[u.id] ? "Ready ✔" : `💎 ${u.cost}`}</button></div>`).join("")}</div>${backBtn}`;
+  }
+  showOverlay(`<div class="menu${name === "shop" || name === "pick" ? " scroll" : ""}">${html}</div>`);
+}
+overlay.addEventListener("click", e => {
+  const btn = e.target.closest("button");
+  if (!btn || state !== "start") return;
+  const d = btn.dataset;
+  if (d.go) showScreen(d.go);
+  else if (d.players) choosePlayers(+d.players);
+  else if (d.buy) buy(d.buy);
+  else if (d.char) buyChar(d.char);
+  else if (d.pick) { const [slot, key] = d.pick.split(":"); pickChar(+slot, key); }
+  else if (d.jump) startIntro();
+  else if (d.music) toggleMusic();
+  else if (d.balance) { balanceOpen = !balanceOpen; showScreen("title"); }
+  else if (d.split) { splitMode = (splitMode + 1) % 3; showScreen("settings"); }
+  else if (d.reset) {
+    if (confirmReset) { wallet = 0; owned = {}; chars = []; checkPicks(); saveWallet(); bears.forEach((b, i) => b.setChar(picks[i])); bestDiamonds = 0; saveDiamonds(0); confirmReset = false; }
+    else confirmReset = true;
+    showScreen("settings");
+  }
+});
+
 // ---- single / two player ----
 let numPlayers = 2;
 const players = () => bears.filter(b => !b.absent);
@@ -525,12 +747,12 @@ const players = () => bears.filter(b => !b.absent);
 function applyPlayers() {
   const solo = numPlayers === 1, b = bears[1];
   b.absent = solo; b.dead = solo; b.done = solo ? "dead" : null;
-  if (solo) bears[0].x = W / 2;
+  bears[0].x = solo ? W / 2 : W / 2 - 70;
 }
 function choosePlayers(n) {
   numPlayers = n;
   applyPlayers();
-  startIntro();
+  showScreen("pick");
 }
 
 let runId = 0;
@@ -544,8 +766,8 @@ function reset() {
   wind = { phase: rand(0, 100), x: 0 };
   const w = W;
   bears = [
-    new Bear("Xiao Xiong", "xx", "ArrowLeft", "ArrowRight", w / 2 - 70, -40),
-    new Bear("Xiao Xiong Mao", "xxm", "KeyA", "KeyD", w / 2 + 70, 40),
+    new Bear(0, picks[0], "ArrowLeft", "ArrowRight", w / 2 - 70, -40),
+    new Bear(1, picks[1], "KeyA", "KeyD", w / 2 + 70, 40),
   ];
   applyPlayers();
   resetViews();
@@ -568,7 +790,7 @@ function reset() {
   obstacles.push(makeObstacle("iss", w * rand(0.3, 0.7), fracOfAlt(408) * START_ALT));
   for (let i = 0; i < 70; i++) clouds.push({ x: rand(0, 1), y: rand(fracOfAlt(10) * START_ALT, START_ALT), s: rand(0.6, 1.8) });
   spaceStars = Array.from({ length: 160 }, () => ({ x: Math.random(), y: Math.random(), r: rand(0.5, 1.8), p: rand(0, 6) }));
-  showOverlay("<h1>Xiao Xiong &amp; Xiao Xiong Mao</h1>Jump out of the C-17 and fall all the way to Earth!\n\n1 player: Xiao Xiong, ← → (or A D) steer, ↑ (or W) parachute\n2 players: Xiao Xiong ← → ↑ · Xiao Xiong Mao A D W · V: split screen\n\nThe air is thin up here. Open your parachute before you reach the ground!\nGrab the glowing health kits to heal. Blue hexagons give a 2.5 s forcefield. Collect the diamonds! Each dude has 2 lives.\nLand safely and a limo takes you to your Minecraft base!\n\n<b>Press 1 for single player · Press 2 for two players</b>\n(or tap the left / right half of the screen)\nM: music on / off");
+  showScreen("title");
 }
 
 // cutscene: drive the limo to the air force base, walk in, board the C-17, take off, then walk off the ramp
@@ -815,13 +1037,15 @@ function start() {
   startGameMusic();
   state = "falling";
   showOverlay("");
+  applyUpgrades();
   snapViews = true;
 }
 
 // ---- physics ----
-const hearts = b => "♥".repeat(b.lives) + "♡".repeat(LIVES - b.lives);
+const hearts = b => "♥".repeat(b.lives) + "♡".repeat(Math.max(0, b.maxLives - b.lives));
 function hurt(b, o, amount, prefix) {
   if (b.invuln > 0) return; // just lost a life: briefly protected
+  if (SPACE_JUNK.has(o.kind)) amount *= b.junkArmor;
   if (b.shield > 0) {
     if (SMALL_OBSTACLES.has(o.kind)) { // the forcefield stops small things outright
       b.hitCd = 0.6;
@@ -830,14 +1054,14 @@ function hurt(b, o, amount, prefix) {
     }
     amount *= SHIELD_LARGE_FACTOR; prefix = "Shield " + prefix;
   }
-  const dmg = Math.round(amount);
+  const dmg = Math.round(amount * b.armor);
   b.hp = Math.max(0, b.hp - dmg); b.hitCd = 0.6; b.redFlash = RED_FLASH_TIME;
   score = Math.max(0, score - dmg * 2);
   popups.push({ x: b.x, y: b.y - 60, t: 1.2, text: `${prefix}-${dmg}` });
   if (b.hp > 0 || b.dead) return;
   b.lives--;
   if (b.lives > 0) { // lose a life and carry on with full health
-    b.hp = MAX_HP; b.invuln = RESPAWN_INVULN;
+    b.hp = b.maxHp; b.invuln = RESPAWN_INVULN;
     popups.push({ x: b.x, y: b.y - 90, t: 1.8, text: `Life lost! ${b.lives} left` });
   } else { b.dead = true; b.done = "dead"; b.chute = false; b.killer = OB_NAME[o.kind]; deathFlash(b.name); }
 }
@@ -850,7 +1074,7 @@ function update(dt) {
     // after a splat with lives to spare, come back above the ground for another go
     if (b.respawnAt && time >= b.respawnAt) {
       b.respawnAt = 0; b.done = null; b.splatAt = 0;
-      b.y = START_ALT - RESPAWN_HEIGHT; b.vx = 0; b.vy = 0; b.hp = MAX_HP; b.chute = false; b.deploy = 0; b.invuln = RESPAWN_INVULN;
+      b.y = START_ALT - RESPAWN_HEIGHT; b.vx = 0; b.vy = 0; b.hp = b.maxHp; b.chute = false; b.deploy = 0; b.invuln = RESPAWN_INVULN;
       popups.push({ x: b.x, y: b.y - 90, t: 1.8, text: `${b.lives} ${b.lives === 1 ? "life" : "lives"} left`, color: "#4cd964" });
     }
   }
@@ -863,13 +1087,13 @@ function update(dt) {
     if (b.done) continue;
     const solo = numPlayers === 1;
     const dir = b.dead ? 0 : (keys[b.right] || (solo && keys.KeyD) ? 1 : 0) - (keys[b.left] || (solo && keys.KeyA) ? 1 : 0) || touchDir;
-    b.deploy = clamp(b.deploy + (b.chute ? 1 : -2) * dt, 0, 1);
+    b.deploy = clamp(b.deploy + (b.chute ? b.chuteRate : -2) * dt, 0, 1);
     // air gets denser towards the ground
     const density = 0.4 + 0.6 * (1 - clamp(altKm(b.y) / 100, 0, 1)) ** 2;
     const k = (DRAG_FREEFALL + (DRAG_CHUTE - DRAG_FREEFALL) * b.deploy) * density;
     const rvx = b.vx - wind.x * density, rvy = b.vy;
     const speed = Math.hypot(rvx, rvy);
-    const ax = dir * STEER * (1 - 0.4 * b.deploy) - k * rvx * speed;
+    const ax = dir * STEER * b.steer * (1 - 0.4 * b.deploy) - k * rvx * speed;
     const ay = GRAVITY - k * rvy * speed;
     b.vx += ax * dt; b.vy += ay * dt;
     b.x += b.vx * dt; b.y += b.vy * dt;
@@ -901,18 +1125,24 @@ function update(dt) {
   for (const b of bears) {
     if (b.done) continue;
     for (const s of gems) {
-      if (!s.got && Math.abs(b.x - s.x) < R + 18 && Math.abs(b.y - s.y) < R + 18) { s.got = true; score += 100; diamonds++; }
+      const reach = R + 18 + b.gemReach;
+      if (s.got || Math.abs(b.x - s.x) > reach || Math.abs(b.y - s.y) > reach) continue;
+      s.got = true; score += 100; diamonds++;
+      if (b.bonusEvery && ++b.gemsGrabbed % b.bonusEvery === 0) {
+        diamonds++;
+        popups.push({ x: b.x, y: b.y - 60, t: 1.2, text: "Bonus 💎!", color: "#7ff3ff" });
+      }
     }
     for (const br of barriers) {
       if (br.got || Math.abs(b.x - br.x) > R + BARRIER_R || Math.abs(b.y - br.y) > R + BARRIER_R) continue;
       br.got = true;
-      b.shield = SHIELD_TIME;
+      b.shield = Math.max(b.shield, SHIELD_TIME);
       popups.push({ x: b.x, y: b.y - 60, t: 1.2, text: "Forcefield!", color: "#6cd0ff" });
     }
     for (const m of medkits) {
       if (m.got || Math.abs(b.x - m.x) > R + MEDKIT_R || Math.abs(b.y - m.y) > R + MEDKIT_R) continue;
       m.got = true;
-      const healed = Math.min(MEDKIT_HEAL, MAX_HP - b.hp);
+      const healed = Math.min(MEDKIT_HEAL * b.healMul, b.maxHp - b.hp);
       b.hp += healed;
       popups.push({ x: b.x, y: b.y - 60, t: 1.4, text: `+${Math.round(healed)} HP`, color: "#4cd964" });
     }
@@ -948,7 +1178,12 @@ function update(dt) {
     b.y = START_ALT - IMG_H / 2;
     const impact = b.vy;
     const onPad = Math.abs(b.x - W / 2) < 120;
-    if (b.dead || impact > SAFE_LANDING_SPEED) {
+    if (!b.dead && impact > b.safeSpeed && b.bounces > 0) { // bouncy characters spring back up instead of splatting
+      b.bounces--; b.vy = -Math.min(impact * 0.6, 650); b.y -= 2;
+      popups.push({ x: b.x, y: b.y - 90, t: 1.4, text: "Boing!", color: "#ffd84a" });
+      continue;
+    }
+    if (b.dead || impact > b.safeSpeed) {
       b.done = "crashed";
       b.lives--;
       if (b.lives > 0) b.respawnAt = time + 2.2; // watch the splat, then respawn
@@ -957,6 +1192,9 @@ function update(dt) {
       b.fluff = Array.from({ length: 18 }, () => ({ a: rand(0.2, Math.PI - 0.2), v: rand(140, 420), r: rand(4, 10) }));
     } else {
       b.done = "landed";
+      b.landAt = performance.now(); // landing animation runs on wall-clock time, like the splat
+      b.chuteSide = b.vx < 0 ? -1 : 1;
+      popups.push({ x: b.x, y: b.y - 90, t: 1.6, text: onPad ? "Bullseye!" : "Nice landing!", color: "#4cd964" });
       b.points = (onPad ? 500 : 0) + Math.max(0, Math.round(300 - impact));
       score += b.points;
     }
@@ -973,7 +1211,8 @@ function update(dt) {
     const line = b => `${b.name}: ${b.dead ? `out of lives, knocked out by ${b.killer}!` : b.done === "landed" ? `soft landing! +${b.points}` : "splat! Out of lives"}`;
     const total = diamonds + (riders.length ? DIAMONDS : 0), record = total > bestDiamonds; // the chest's stack counts too
     saveDiamonds(total);
-    const html = `<h1>${allDead ? "Game over" : "Touchdown!"}</h1>${players().map(line).join("\n")}\n\nScore: ${Math.round(score)}\n💎 Diamonds: ${riders.length ? `${diamonds} collected + ${DIAMONDS} from the chest = ${total}` : total}${record ? " · new best!" : `\nBest: ${bestDiamonds}`}\n\nPress Space, R or tap to play again`;
+    wallet += total; saveWallet();
+    const html = `<h1>${allDead ? "Game over" : "Touchdown!"}</h1>${players().map(line).join("\n")}\n\nScore: ${Math.round(score)}\n💎 Diamonds: ${riders.length ? `${diamonds} collected + ${DIAMONDS} from the chest = ${total}` : total}${record ? " · new best!" : `\nBest: ${bestDiamonds}`}\nWallet: 💎 ${wallet} (spend it in the Marketplace)\n\nPress Space, R or tap to play again`;
     if (riders.length) return startOutro(html);
     const run = runId;
     if (splatted) setTimeout(() => { if (run === runId && state === "end") showOverlay(html); }, 1600); // let the splat play first
@@ -1082,7 +1321,7 @@ function renderTakeoff(t) {
 function drawIntroDude(b, v, x, y, bh, t, alpha = 1, walking = true) {
   const img = PHOTOS[b.key];
   if (!img.ok || alpha <= 0 || b.absent) return;
-  const hh = bh * v.s, ww = hh * img.naturalWidth / img.naturalHeight, ph = b.key === "xx" ? 0 : 1;
+  const hh = bh * v.s, ww = hh * img.naturalWidth / img.naturalHeight, ph = b.slot;
   ctx.save();
   ctx.globalAlpha = alpha;
   ctx.translate(v.ox + x * v.s, v.oy + y * v.s - (walking ? Math.abs(Math.sin(t * 9 + ph)) * hh * 0.08 : 0));
@@ -1616,7 +1855,7 @@ function render() {
     const y = 30 + lines.length * 26 + i * 34;
     const label = `${b.name}  ${hearts(b)}  ${Math.round(b.hp)} HP`;
     ctx.strokeText(label, 16, y); ctx.fillText(label, 16, y);
-    drawHealthBar(ctx, 16, y + 5, 180, 12, b.hp);
+    drawHealthBar(ctx, 16, y + 5, 180, 12, b.hp, b.maxHp);
   });
   // diamond counter (top right)
   ctx.font = "bold 26px sans-serif"; ctx.textAlign = "right";
@@ -1716,8 +1955,8 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 
-sbMarkers[0].src = "TheDudesAvatars/xiaoxiong.png";
-sbMarkers[1].src = "TheDudesAvatars/xiaoxiongmao.png";
+
+
 resize();
 reset();
 buildSidebar();
